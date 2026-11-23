@@ -432,6 +432,7 @@
 
       if (lecteurAudio.src) URL.revokeObjectURL(lecteurAudio.src);
       lecteurAudio.src = URL.createObjectURL(audioEnregistre);
+      corrigerDureeLecteur(lecteurAudio);
       var tailleMo = (audioEnregistre.size / (1024 * 1024)).toFixed(2);
       infosEnregistrement.textContent = 'Durée : ' + formaterDuree(dureeSecondes) +
         ' · Taille : ' + tailleMo + ' Mo · Format : ' + type.split(';')[0];
@@ -439,12 +440,35 @@
       afficherMessageEnregistrement('Enregistrement terminé. Tu peux le réécouter.', 'succes');
     }
 
+    // Les enregistrements WebM de Chrome n'indiquent pas leur durée : le lecteur croit qu'elle est
+    // infinie et sa barre saute à la fin. On l'oblige à parcourir le fichier une fois, sans son,
+    // pour qu'il calcule la vraie durée, puis on revient au début.
+    function corrigerDureeLecteur(lecteur) {
+      lecteur.addEventListener('loadedmetadata', function quandMetadonnees() {
+        lecteur.removeEventListener('loadedmetadata', quandMetadonnees);
+        if (lecteur.duration !== Infinity && !isNaN(lecteur.duration)) return;
+        lecteur.addEventListener('durationchange', function quandDureeConnue() {
+          if (lecteur.duration === Infinity || isNaN(lecteur.duration)) return;
+          lecteur.removeEventListener('durationchange', quandDureeConnue);
+          lecteur.currentTime = 0;
+        });
+        lecteur.currentTime = 1e101;
+      });
+    }
+
     // ---------- Transcription en direct (Web Speech API) ----------
     var ClasseReconnaissance = window.SpeechRecognition || window.webkitSpeechRecognition;
     var reconnaissanceVocale = null;  // l'objet de reconnaissance en cours
     var texteDirectFinal = '';        // le texte confirmé depuis le début de l'enregistrement
     var directActif = false;          // vrai tant que l'enregistrement tourne
-    var directIndisponible = false;   // vrai si le navigateur refuse le direct
+    var directIndisponible = false;   // vrai si le direct a été abandonné pour cet enregistrement
+    var derniereErreurDirect = '';    // le dernier code d'erreur renvoyé par le navigateur
+    var echecsConsecutifsDirect = 0;  // sessions terminées d'affilée sans aucun mot reconnu
+    var motReconnuDirect = false;     // vrai dès qu'au moins un mot a été reconnu
+    var sessionAvecResultat = false;  // vrai si la session en cours a reconnu quelque chose
+    var minuteurVerificationDirect = null;
+    var NOMBRE_MAX_ECHECS_DIRECT = 3;
+    var DELAI_MAX_SANS_MOT_DIRECT = 15000; // 15 secondes
 
     var zoneTexteDirect = document.getElementById('zone-texte-direct');
     var elementTexteFinal = document.getElementById('texte-direct-final');
@@ -457,6 +481,9 @@
       elementTexteProvisoire.textContent = '';
       messageDirect.textContent = '';
       directIndisponible = false;
+      derniereErreurDirect = '';
+      echecsConsecutifsDirect = 0;
+      motReconnuDirect = false;
 
       if (!ClasseReconnaissance) {
         zoneTexteDirect.hidden = true;
@@ -465,17 +492,47 @@
       }
       zoneTexteDirect.hidden = false;
       directActif = true;
+      messageDirect.textContent = 'Direct : démarrage…';
       lancerReconnaissance();
+
+      // Si aucun mot n'est reconnu au bout de 15 secondes, on abandonne le direct.
+      clearTimeout(minuteurVerificationDirect);
+      minuteurVerificationDirect = setTimeout(function () {
+        if (directActif && !motReconnuDirect) abandonnerTranscriptionDirecte();
+      }, DELAI_MAX_SANS_MOT_DIRECT);
+    }
+
+    // Arrête définitivement le direct pour cet enregistrement et explique pourquoi.
+    function abandonnerTranscriptionDirecte() {
+      directIndisponible = true;
+      directActif = false;
+      clearTimeout(minuteurVerificationDirect);
+      if (reconnaissanceVocale) {
+        try { reconnaissanceVocale.abort(); } catch (erreur) {}
+        reconnaissanceVocale = null;
+      }
+      zoneTexteDirect.hidden = true;
+      messageDirect.textContent = 'Direct indisponible sur ce navigateur (dernière erreur : ' +
+        (derniereErreurDirect || 'aucune, mais aucun mot reconnu') + '). L\'enregistrement continue normalement.';
     }
 
     // Crée et démarre une session de reconnaissance. Elle est relancée tant que directActif est vrai.
     function lancerReconnaissance() {
+      sessionAvecResultat = false;
       reconnaissanceVocale = new ClasseReconnaissance();
       reconnaissanceVocale.lang = 'fr-FR';
       reconnaissanceVocale.continuous = true;
       reconnaissanceVocale.interimResults = true;
 
+      reconnaissanceVocale.onaudiostart = function () {
+        if (!motReconnuDirect) messageDirect.textContent = 'Direct : écoute en cours…';
+      };
+
       reconnaissanceVocale.onresult = function (evenement) {
+        sessionAvecResultat = true;
+        motReconnuDirect = true;
+        echecsConsecutifsDirect = 0;
+        messageDirect.textContent = '';
         var provisoire = '';
         for (var i = evenement.resultIndex; i < evenement.results.length; i++) {
           var morceau = evenement.results[i][0].transcript;
@@ -490,39 +547,46 @@
       };
 
       reconnaissanceVocale.onerror = function (evenement) {
-        if (evenement.error === 'not-allowed' || evenement.error === 'service-not-allowed' || evenement.error === 'language-not-supported') {
-          directIndisponible = true;
-          messageDirect.textContent = 'Direct indisponible sur ce navigateur (' + evenement.error + '). L\'enregistrement continue normalement.';
-        } else if (evenement.error === 'network') {
-          messageDirect.textContent = 'Direct interrompu : problème de connexion. Nouvel essai…';
+        derniereErreurDirect = evenement.error || 'inconnue';
+        if (derniereErreurDirect === 'not-allowed' || derniereErreurDirect === 'service-not-allowed' || derniereErreurDirect === 'language-not-supported') {
+          abandonnerTranscriptionDirecte();
+        } else if (derniereErreurDirect !== 'no-speech' && derniereErreurDirect !== 'aborted') {
+          messageDirect.textContent = 'Direct : erreur « ' + derniereErreurDirect + ' », nouvel essai…';
         }
-        // 'no-speech' et 'aborted' sont normaux : la relance automatique s'en occupe.
       };
 
       reconnaissanceVocale.onend = function () {
         elementTexteProvisoire.textContent = '';
-        if (directActif && !directIndisponible) {
-          setTimeout(function () {
-            if (!directActif) return;
-            try { lancerReconnaissance(); } catch (erreur) {}
-          }, 300);
+        if (!directActif || directIndisponible) return;
+        if (!sessionAvecResultat && derniereErreurDirect !== 'no-speech') {
+          echecsConsecutifsDirect++;
+          if (echecsConsecutifsDirect >= NOMBRE_MAX_ECHECS_DIRECT) {
+            abandonnerTranscriptionDirecte();
+            return;
+          }
         }
+        setTimeout(function () {
+          if (!directActif || directIndisponible) return;
+          try { lancerReconnaissance(); } catch (erreur) { abandonnerTranscriptionDirecte(); }
+        }, 300);
       };
 
       try {
         reconnaissanceVocale.start();
       } catch (erreur) {
-        directIndisponible = true;
-        messageDirect.textContent = 'Direct indisponible sur ce navigateur. L\'enregistrement continue normalement.';
+        derniereErreurDirect = erreur && erreur.name ? erreur.name : 'démarrage impossible';
+        abandonnerTranscriptionDirecte();
       }
     }
 
     function arreterTranscriptionDirecte() {
       directActif = false;
+      clearTimeout(minuteurVerificationDirect);
       if (reconnaissanceVocale) {
         try { reconnaissanceVocale.stop(); } catch (erreur) {}
         reconnaissanceVocale = null;
       }
+      if (!directIndisponible) messageDirect.textContent = '';
     }
 
     boutonEnregistrer.addEventListener('click', function () {
