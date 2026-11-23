@@ -54,6 +54,36 @@
     .ecran h2 { margin: 0 0 12px; font-size: 22px; }
     .ecran p { margin: 0; color: var(--couleur-texte-discret); line-height: 1.5; }
 
+    /* Écran Enregistrer */
+    .zone-enregistrement {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      margin-top: 32px;
+    }
+    .bouton-micro {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      border: none;
+      background: var(--couleur-accent);
+      color: #ffffff;
+      font: inherit;
+      font-size: 20px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .bouton-micro.en-cours { background: var(--couleur-erreur); }
+    .chrono {
+      font-size: 32px;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+    .zone-reecoute { margin-top: 24px; }
+    .zone-reecoute audio { width: 100%; }
+    .infos { margin-top: 8px !important; font-size: 14px; }
+
     /* Formulaires et boutons */
     .etiquette { display: block; margin: 24px 0 8px; font-weight: 600; }
     .ligne-champ { display: flex; gap: 8px; }
@@ -126,7 +156,19 @@
   <main>
     <section id="ecran-enregistrer" class="ecran">
       <h2>Enregistrer</h2>
-      <p>Ici, tu pourras enregistrer avec le micro, voir le texte en direct, puis obtenir la transcription de qualité.</p>
+      <p>Appuie sur le bouton pour enregistrer avec le micro, puis réécoute ton enregistrement.</p>
+
+      <div class="zone-enregistrement">
+        <button type="button" id="bouton-enregistrer" class="bouton-micro">Démarrer</button>
+        <div id="chrono-enregistrement" class="chrono">00:00</div>
+      </div>
+
+      <p id="message-enregistrement" class="message" role="status"></p>
+
+      <div id="zone-reecoute" class="zone-reecoute" hidden>
+        <audio id="lecteur-audio" controls preload="metadata"></audio>
+        <p id="infos-enregistrement" class="infos"></p>
+      </div>
     </section>
 
     <section id="ecran-importer" class="ecran">
@@ -267,6 +309,126 @@
     });
 
     champCleGroq.value = lireCleGroq();
+
+    // ---------- Enregistrement au micro ----------
+    var enregistreurAudio = null;   // l'objet MediaRecorder en cours
+    var morceauxAudio = [];         // les morceaux de son reçus pendant l'enregistrement
+    var audioEnregistre = null;     // le dernier enregistrement terminé (Blob)
+    var fluxMicro = null;           // le flux du micro, à couper à l'arrêt
+    var debutEnregistrement = 0;
+    var minuteurChrono = null;
+
+    var boutonEnregistrer = document.getElementById('bouton-enregistrer');
+    var chronoEnregistrement = document.getElementById('chrono-enregistrement');
+    var messageEnregistrement = document.getElementById('message-enregistrement');
+    var zoneReecoute = document.getElementById('zone-reecoute');
+    var lecteurAudio = document.getElementById('lecteur-audio');
+    var infosEnregistrement = document.getElementById('infos-enregistrement');
+
+    function afficherMessageEnregistrement(texte, type) {
+      messageEnregistrement.textContent = texte;
+      messageEnregistrement.className = 'message' + (type ? ' ' + type : '');
+    }
+
+    // Transforme un nombre de secondes en texte "mm:ss".
+    function formaterDuree(secondes) {
+      var minutes = Math.floor(secondes / 60);
+      var reste = Math.floor(secondes % 60);
+      return String(minutes).padStart(2, '0') + ':' + String(reste).padStart(2, '0');
+    }
+
+    function mettreAJourChrono() {
+      var secondes = (Date.now() - debutEnregistrement) / 1000;
+      chronoEnregistrement.textContent = formaterDuree(secondes);
+    }
+
+    // Choisit un format audio que le téléphone sait produire (WebM sur Android, MP4 sur iPhone).
+    function choisirFormatAudio() {
+      var formats = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+      for (var i = 0; i < formats.length; i++) {
+        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(formats[i])) return formats[i];
+      }
+      return '';
+    }
+
+    function demarrerEnregistrement() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+        afficherMessageEnregistrement('Ce navigateur ne sait pas enregistrer le micro.', 'erreur');
+        return;
+      }
+      afficherMessageEnregistrement('', '');
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (flux) {
+        fluxMicro = flux;
+        morceauxAudio = [];
+        var format = choisirFormatAudio();
+        enregistreurAudio = format ? new MediaRecorder(flux, { mimeType: format }) : new MediaRecorder(flux);
+
+        enregistreurAudio.addEventListener('dataavailable', function (evenement) {
+          if (evenement.data && evenement.data.size > 0) morceauxAudio.push(evenement.data);
+        });
+        enregistreurAudio.addEventListener('stop', terminerEnregistrement);
+
+        enregistreurAudio.start(1000); // un morceau par seconde
+        debutEnregistrement = Date.now();
+        chronoEnregistrement.textContent = '00:00';
+        minuteurChrono = setInterval(mettreAJourChrono, 250);
+        boutonEnregistrer.textContent = 'Arrêter';
+        boutonEnregistrer.classList.add('en-cours');
+        afficherMessageEnregistrement('Enregistrement en cours…', '');
+      }).catch(function (erreur) {
+        if (erreur && (erreur.name === 'NotAllowedError' || erreur.name === 'SecurityError')) {
+          afficherMessageEnregistrement('Accès au micro refusé. Autorise le micro pour ce site dans les réglages du navigateur.', 'erreur');
+        } else if (erreur && erreur.name === 'NotFoundError') {
+          afficherMessageEnregistrement('Aucun micro trouvé sur cet appareil.', 'erreur');
+        } else {
+          afficherMessageEnregistrement('Impossible de démarrer le micro (' + (erreur && erreur.name ? erreur.name : 'erreur inconnue') + ').', 'erreur');
+        }
+      });
+    }
+
+    function arreterEnregistrement() {
+      if (enregistreurAudio && enregistreurAudio.state !== 'inactive') {
+        enregistreurAudio.stop(); // déclenche terminerEnregistrement
+      }
+    }
+
+    // Appelée quand l'enregistreur s'arrête : assemble le son et prépare la réécoute.
+    function terminerEnregistrement() {
+      clearInterval(minuteurChrono);
+      var dureeSecondes = (Date.now() - debutEnregistrement) / 1000;
+      if (fluxMicro) {
+        fluxMicro.getTracks().forEach(function (piste) { piste.stop(); });
+        fluxMicro = null;
+      }
+      var type = (enregistreurAudio && enregistreurAudio.mimeType) || 'audio/webm';
+      audioEnregistre = new Blob(morceauxAudio, { type: type });
+      enregistreurAudio = null;
+
+      boutonEnregistrer.textContent = 'Démarrer';
+      boutonEnregistrer.classList.remove('en-cours');
+
+      if (audioEnregistre.size === 0) {
+        afficherMessageEnregistrement('L\'enregistrement est vide. Réessaie.', 'erreur');
+        zoneReecoute.hidden = true;
+        return;
+      }
+
+      if (lecteurAudio.src) URL.revokeObjectURL(lecteurAudio.src);
+      lecteurAudio.src = URL.createObjectURL(audioEnregistre);
+      var tailleMo = (audioEnregistre.size / (1024 * 1024)).toFixed(2);
+      infosEnregistrement.textContent = 'Durée : ' + formaterDuree(dureeSecondes) +
+        ' · Taille : ' + tailleMo + ' Mo · Format : ' + type.split(';')[0];
+      zoneReecoute.hidden = false;
+      afficherMessageEnregistrement('Enregistrement terminé. Tu peux le réécouter.', 'succes');
+    }
+
+    boutonEnregistrer.addEventListener('click', function () {
+      if (enregistreurAudio && enregistreurAudio.state === 'recording') {
+        arreterEnregistrement();
+      } else {
+        demarrerEnregistrement();
+      }
+    });
   </script>
 </body>
 </html>
