@@ -92,6 +92,22 @@
     .titre-zone { font-size: 13px; font-weight: 600; color: var(--couleur-texte-discret); margin-bottom: 8px; }
     .texte-direct { min-height: 3em; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
     .texte-provisoire { color: #9e9e9e; }
+    .zone-transcription {
+      margin-top: 24px;
+      background: var(--couleur-carte);
+      border: 1px solid var(--couleur-bordure);
+      padding: 12px;
+    }
+    .zone-transcription .message { margin-top: 0 !important; }
+    .texte-transcription {
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .texte-transcription:not(:empty) { margin-top: 8px; }
+    .zone-transcription .bouton-secondaire { width: 100%; margin-top: 12px; }
 
     /* Formulaires et boutons */
     .etiquette { display: block; margin: 24px 0 8px; font-weight: 600; }
@@ -183,6 +199,13 @@
       <div id="zone-reecoute" class="zone-reecoute" hidden>
         <audio id="lecteur-audio" controls preload="metadata"></audio>
         <p id="infos-enregistrement" class="infos"></p>
+      </div>
+
+      <div id="zone-transcription" class="zone-transcription" hidden>
+        <div class="titre-zone">Transcription</div>
+        <p id="message-transcription" class="message" role="status"></p>
+        <div id="texte-transcription" class="texte-transcription"></div>
+        <button type="button" id="bouton-relancer-transcription" class="bouton-secondaire" hidden>Relancer la transcription</button>
       </div>
     </section>
 
@@ -376,6 +399,7 @@
         return;
       }
       afficherMessageEnregistrement('Préparation du micro…', '');
+      zoneTranscription.hidden = true;
       enPreparation = true;
       boutonEnregistrer.disabled = true;
       boutonEnregistrer.textContent = 'Patiente…';
@@ -469,6 +493,7 @@
         ' · Taille : ' + tailleMo + ' Mo · Format : ' + type.split(';')[0];
       zoneReecoute.hidden = false;
       afficherMessageEnregistrement('Enregistrement terminé. Tu peux le réécouter.', 'succes');
+      transcrireEnregistrement();
     }
 
     // Les enregistrements WebM de Chrome n'indiquent pas leur durée : le lecteur croit qu'elle est
@@ -486,6 +511,116 @@
         lecteur.currentTime = 1e101;
       });
     }
+
+    // ---------- Transcription Whisper (API Groq) ----------
+    var URL_API_TRANSCRIPTION = 'https://api.groq.com/openai/v1/audio/transcriptions';
+    var MODELE_WHISPER = 'whisper-large-v3';
+    var LANGUE_TRANSCRIPTION = 'fr';
+    var TAILLE_MAX_FICHIER_GROQ = 25 * 1024 * 1024; // 25 Mo, limite du compte gratuit
+
+    var zoneTranscription = document.getElementById('zone-transcription');
+    var messageTranscription = document.getElementById('message-transcription');
+    var texteTranscription = document.getElementById('texte-transcription');
+    var boutonRelancerTranscription = document.getElementById('bouton-relancer-transcription');
+    var transcriptionEnCours = false;
+
+    // Crée une erreur avec un message lisible par l'utilisateur.
+    function erreurTranscription(message) {
+      var erreur = new Error(message);
+      erreur.messageUtilisateur = message;
+      return erreur;
+    }
+
+    // Donne une extension de fichier cohérente avec le format audio (Groq s'en sert pour lire le fichier).
+    function extensionPourFormat(typeAudio) {
+      if (/mp4|m4a|aac/.test(typeAudio)) return 'm4a';
+      if (/ogg/.test(typeAudio)) return 'ogg';
+      if (/mpeg|mp3/.test(typeAudio)) return 'mp3';
+      if (/wav/.test(typeAudio)) return 'wav';
+      return 'webm';
+    }
+
+    // Envoie un fichier audio à Groq et renvoie (via une promesse) le texte transcrit.
+    // Réutilisable pour les enregistrements et pour les fichiers importés.
+    function transcrireAvecWhisper(fichierAudio, nomFichier) {
+      var cle = lireCleGroq();
+      if (!cle) return Promise.reject(erreurTranscription('Ajoute ta clé API Groq dans Réglages.'));
+      if (fichierAudio.size > TAILLE_MAX_FICHIER_GROQ) {
+        return Promise.reject(erreurTranscription('Fichier trop gros pour Groq (' +
+          (fichierAudio.size / (1024 * 1024)).toFixed(1) + ' Mo, maximum 25 Mo).'));
+      }
+      if (!navigator.onLine) return Promise.reject(erreurTranscription('Pas de connexion internet.'));
+
+      var formulaire = new FormData();
+      formulaire.append('file', fichierAudio, nomFichier);
+      formulaire.append('model', MODELE_WHISPER);
+      formulaire.append('language', LANGUE_TRANSCRIPTION);
+      formulaire.append('response_format', 'json');
+      formulaire.append('temperature', '0');
+
+      return fetch(URL_API_TRANSCRIPTION, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + cle },
+        body: formulaire
+      }).catch(function () {
+        throw erreurTranscription('Pas de connexion, ou Groq injoignable.');
+      }).then(function (reponse) {
+        return reponse.text().then(function (corps) {
+          var donnees = null;
+          try { donnees = JSON.parse(corps); } catch (e) {}
+          if (reponse.ok) {
+            return (donnees && typeof donnees.text === 'string') ? donnees.text.trim() : '';
+          }
+          var detail = donnees && donnees.error && donnees.error.message ? donnees.error.message : '';
+          if (reponse.status === 401 || reponse.status === 403) {
+            throw erreurTranscription('Clé refusée par Groq. Vérifie-la dans Réglages.');
+          }
+          if (reponse.status === 413) {
+            throw erreurTranscription('Fichier trop gros pour Groq (maximum 25 Mo).');
+          }
+          if (reponse.status === 429) {
+            var attente = reponse.headers.get('retry-after');
+            var precision = attente ? ' Réessaie dans ' + attente + ' s.' : (detail ? ' ' + detail : ' Réessaie plus tard.');
+            throw erreurTranscription('Quota Groq atteint.' + precision);
+          }
+          throw erreurTranscription('Erreur Groq (code ' + reponse.status + ')' + (detail ? ' : ' + detail : '.'));
+        });
+      });
+    }
+
+    function afficherMessageTranscription(texte, type) {
+      messageTranscription.textContent = texte;
+      messageTranscription.className = 'message' + (type ? ' ' + type : '');
+      messageTranscription.hidden = !texte;
+    }
+
+    // Transcrit le dernier enregistrement (appelée automatiquement à l'arrêt, ou par le bouton Relancer).
+    function transcrireEnregistrement() {
+      if (!audioEnregistre || audioEnregistre.size === 0 || transcriptionEnCours) return;
+      transcriptionEnCours = true;
+      zoneTranscription.hidden = false;
+      texteTranscription.textContent = '';
+      boutonRelancerTranscription.hidden = true;
+      afficherMessageTranscription('Transcription en cours…', '');
+
+      var nomFichier = 'enregistrement.' + extensionPourFormat(audioEnregistre.type);
+      transcrireAvecWhisper(audioEnregistre, nomFichier).then(function (texte) {
+        transcriptionEnCours = false;
+        if (!texte) {
+          afficherMessageTranscription('Aucune parole détectée dans l\'enregistrement.', 'erreur');
+          boutonRelancerTranscription.hidden = false;
+          return;
+        }
+        afficherMessageTranscription('', '');
+        texteTranscription.textContent = texte;
+      }).catch(function (erreur) {
+        transcriptionEnCours = false;
+        afficherMessageTranscription(erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
+        boutonRelancerTranscription.hidden = false;
+      });
+    }
+
+    boutonRelancerTranscription.addEventListener('click', transcrireEnregistrement);
 
     // ---------- Transcription en direct (Web Speech API) ----------
     // Désactivée : sur Android, le micro ne peut pas servir à la fois à l'enregistrement et au direct.
