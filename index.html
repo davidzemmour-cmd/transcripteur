@@ -13,6 +13,8 @@
       --couleur-accent: #2b6cb0;
       --couleur-carte: #ffffff;
       --couleur-bordure: #dddddd;
+      --couleur-succes: #2f7d32;
+      --couleur-erreur: #c62828;
       --hauteur-navigation: 64px;
     }
     * { box-sizing: border-box; }
@@ -51,6 +53,33 @@
     .ecran.actif { display: block; }
     .ecran h2 { margin: 0 0 12px; font-size: 22px; }
     .ecran p { margin: 0; color: var(--couleur-texte-discret); line-height: 1.5; }
+
+    /* Formulaires et boutons */
+    .etiquette { display: block; margin: 24px 0 8px; font-weight: 600; }
+    .ligne-champ { display: flex; gap: 8px; }
+    .ligne-champ input {
+      flex: 1;
+      min-width: 0;
+      font: inherit;
+      font-size: 16px; /* 16 px minimum : évite le zoom automatique sur iPhone */
+      padding: 12px;
+      border: 1px solid var(--couleur-bordure);
+      background: var(--couleur-carte);
+      color: var(--couleur-texte);
+    }
+    .groupe-boutons { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+    .bouton-principal, .bouton-secondaire {
+      font: inherit;
+      font-size: 16px;
+      padding: 12px 16px;
+      border: 1px solid var(--couleur-accent);
+      cursor: pointer;
+    }
+    .bouton-principal { background: var(--couleur-accent); color: #ffffff; }
+    .bouton-secondaire { background: var(--couleur-carte); color: var(--couleur-accent); }
+    .message { margin-top: 16px !important; font-weight: 600; }
+    .message.succes { color: var(--couleur-succes) !important; }
+    .message.erreur { color: var(--couleur-erreur) !important; }
 
     /* Barre de navigation du bas */
     nav {
@@ -112,7 +141,21 @@
 
     <section id="ecran-reglages" class="ecran">
       <h2>Réglages</h2>
-      <p>Ici, tu saisiras ta clé API Groq. Elle restera uniquement sur ce téléphone.</p>
+      <p>Ta clé API Groq reste uniquement sur ce téléphone. Elle n'est jamais envoyée ailleurs que chez Groq.</p>
+
+      <label for="champ-cle-groq" class="etiquette">Clé API Groq</label>
+      <div class="ligne-champ">
+        <input id="champ-cle-groq" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gsk_...">
+        <button type="button" id="bouton-afficher-cle" class="bouton-secondaire">Afficher</button>
+      </div>
+
+      <div class="groupe-boutons">
+        <button type="button" id="bouton-enregistrer-cle" class="bouton-principal">Enregistrer la clé</button>
+        <button type="button" id="bouton-tester-cle" class="bouton-secondaire">Tester la clé</button>
+        <button type="button" id="bouton-effacer-cle" class="bouton-secondaire">Effacer la clé</button>
+      </div>
+
+      <p id="message-reglages" class="message" role="status"></p>
     </section>
   </main>
 
@@ -142,6 +185,88 @@
     });
 
     afficherEcran('enregistrer');
+
+    // ---------- Réglages : clé API Groq ----------
+    // La clé est stockée uniquement dans le navigateur de l'appareil.
+    var NOM_STOCKAGE_CLE_GROQ = 'transcripteur_cle_groq';
+    var champCleGroq = document.getElementById('champ-cle-groq');
+    var messageReglages = document.getElementById('message-reglages');
+
+    function lireCleGroq() {
+      try { return localStorage.getItem(NOM_STOCKAGE_CLE_GROQ) || ''; }
+      catch (erreur) { return ''; }
+    }
+
+    function enregistrerCleGroq(cle) {
+      localStorage.setItem(NOM_STOCKAGE_CLE_GROQ, cle);
+    }
+
+    function effacerCleGroq() {
+      localStorage.removeItem(NOM_STOCKAGE_CLE_GROQ);
+    }
+
+    function afficherMessageReglages(texte, type) {
+      messageReglages.textContent = texte;
+      messageReglages.className = 'message' + (type ? ' ' + type : '');
+    }
+
+    // Vérifie la clé en demandant à Groq la liste de ses modèles.
+    // Cette demande ne contient pas d'audio et ne consomme pas de quota de transcription.
+    function testerCleGroq() {
+      var cle = champCleGroq.value.trim() || lireCleGroq();
+      if (!cle) {
+        afficherMessageReglages('Saisis d\'abord ta clé.', 'erreur');
+        return;
+      }
+      if (!navigator.onLine) {
+        afficherMessageReglages('Pas de connexion internet.', 'erreur');
+        return;
+      }
+      afficherMessageReglages('Test en cours…', '');
+      fetch('https://api.groq.com/openai/v1/models', {
+        headers: { 'Authorization': 'Bearer ' + cle }
+      }).then(function (reponse) {
+        if (reponse.ok) {
+          afficherMessageReglages('Clé valide. Groq répond bien depuis l\'app.', 'succes');
+        } else if (reponse.status === 401 || reponse.status === 403) {
+          afficherMessageReglages('Clé refusée par Groq. Vérifie-la (code ' + reponse.status + ').', 'erreur');
+        } else {
+          afficherMessageReglages('Groq a répondu avec une erreur (code ' + reponse.status + '). Réessaie plus tard.', 'erreur');
+        }
+      }).catch(function () {
+        afficherMessageReglages('Groq injoignable depuis l\'app. Soit la connexion a coupé, soit Groq refuse les appels venant d\'une page web.', 'erreur');
+      });
+    }
+
+    document.getElementById('bouton-afficher-cle').addEventListener('click', function () {
+      var masque = champCleGroq.type === 'password';
+      champCleGroq.type = masque ? 'text' : 'password';
+      this.textContent = masque ? 'Masquer' : 'Afficher';
+    });
+
+    document.getElementById('bouton-enregistrer-cle').addEventListener('click', function () {
+      var cle = champCleGroq.value.trim();
+      if (!cle) {
+        afficherMessageReglages('Le champ est vide.', 'erreur');
+        return;
+      }
+      try {
+        enregistrerCleGroq(cle);
+        afficherMessageReglages('Clé enregistrée sur ce téléphone.', 'succes');
+      } catch (erreur) {
+        afficherMessageReglages('Impossible d\'enregistrer la clé (navigation privée ?).', 'erreur');
+      }
+    });
+
+    document.getElementById('bouton-tester-cle').addEventListener('click', testerCleGroq);
+
+    document.getElementById('bouton-effacer-cle').addEventListener('click', function () {
+      try { effacerCleGroq(); } catch (erreur) {}
+      champCleGroq.value = '';
+      afficherMessageReglages('Clé effacée de ce téléphone.', 'succes');
+    });
+
+    champCleGroq.value = lireCleGroq();
   </script>
 </body>
 </html>
