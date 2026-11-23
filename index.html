@@ -562,7 +562,7 @@
 
     // Envoie un fichier audio à Groq et renvoie (via une promesse) le texte transcrit.
     // Réutilisable pour les enregistrements et pour les fichiers importés.
-    function transcrireAvecWhisper(fichierAudio, nomFichier) {
+    function transcrireAvecWhisper(fichierAudio, nomFichier, contexte) {
       var cle = lireCleGroq();
       if (!cle) return Promise.reject(erreurTranscription('Ajoute ta clé API Groq dans Réglages.'));
       if (fichierAudio.size > TAILLE_MAX_FICHIER_GROQ) {
@@ -577,6 +577,7 @@
       formulaire.append('language', LANGUE_TRANSCRIPTION);
       formulaire.append('response_format', 'json');
       formulaire.append('temperature', '0');
+      if (contexte) formulaire.append('prompt', contexte); // fin du morceau précédent, pour la continuité
 
       return fetch(URL_API_TRANSCRIPTION, {
         method: 'POST',
@@ -599,9 +600,13 @@
             throw erreurTranscription('Fichier trop gros pour Groq (maximum 25 Mo).');
           }
           if (reponse.status === 429) {
-            var attente = reponse.headers.get('retry-after');
-            var precision = attente ? ' Réessaie dans ' + attente + ' s.' : (detail ? ' ' + detail : ' Réessaie plus tard.');
-            throw erreurTranscription('Quota Groq atteint.' + precision);
+            var attenteSecondes = lireDelaiAttenteQuota(reponse.headers.get('retry-after'), detail);
+            var erreurQuota = erreurTranscription('Quota Groq atteint.' + (attenteSecondes !== null
+              ? ' Réessaie dans ' + formaterAttente(attenteSecondes) + '.'
+              : (detail ? ' ' + detail : ' Réessaie plus tard.')));
+            erreurQuota.quotaAtteint = true;
+            erreurQuota.attenteSecondes = attenteSecondes;
+            throw erreurQuota;
           }
           throw erreurTranscription('Erreur Groq (code ' + reponse.status + ')' + (detail ? ' : ' + detail : '.'));
         });
@@ -624,7 +629,10 @@
       afficherMessageTranscription('Transcription en cours…', '');
 
       var nomFichier = 'enregistrement.' + extensionPourFormat(audioEnregistre.type);
-      transcrireAudio(audioEnregistre, nomFichier).then(function (texte) {
+      transcrireAudio(audioEnregistre, nomFichier, function (message, textePartiel) {
+        afficherMessageTranscription(message, '');
+        texteTranscription.textContent = textePartiel;
+      }).then(function (texte) {
         transcriptionEnCours = false;
         if (!texte) {
           afficherMessageTranscription('Aucune parole détectée dans l\'enregistrement.', 'erreur');
@@ -636,6 +644,7 @@
       }).catch(function (erreur) {
         transcriptionEnCours = false;
         afficherMessageTranscription(erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
+        boutonRelancerTranscription.textContent = erreur.repriseePossible ? 'Reprendre la transcription' : 'Relancer la transcription';
         boutonRelancerTranscription.hidden = false;
       });
     }
@@ -643,15 +652,208 @@
     boutonRelancerTranscription.addEventListener('click', transcrireEnregistrement);
 
     // Point d'entrée unique pour transcrire un son, qu'il vienne du micro ou d'un fichier importé.
-    // Étape 7 : envoi direct si le fichier fait moins de 25 Mo.
-    // Étape 8 : le découpage en morceaux sera ajouté ici, pour les deux écrans à la fois.
-    function transcrireAudio(fichierAudio, nomFichier) {
-      if (fichierAudio.size > TAILLE_MAX_FICHIER_GROQ) {
-        return Promise.reject(erreurTranscription('Fichier trop long (' +
-          (fichierAudio.size / (1024 * 1024)).toFixed(1) +
-          ' Mo, maximum 25 Mo). Le découpage en morceaux arrive à l\'étape 8.'));
+    // Moins de 25 Mo : envoi direct. Au-delà : découpage en morceaux (voir plus bas).
+    // suivi(message, textePartiel) est appelée pour afficher la progression.
+    function transcrireAudio(fichierAudio, nomFichier, suivi) {
+      if (fichierAudio.size <= TAILLE_MAX_FICHIER_GROQ) {
+        return transcrireAvecWhisper(fichierAudio, nomFichier);
       }
-      return transcrireAvecWhisper(fichierAudio, nomFichier);
+      return transcrireParMorceaux(fichierAudio, suivi || function () {});
+    }
+
+    // ---------- Découpage des longs fichiers ----------
+    var FREQUENCE_DECOUPAGE = 16000;               // Hz : la fréquence utilisée par Whisper
+    var DUREE_MORCEAU_SECONDES = 600;              // 10 minutes ≈ 19 Mo en WAV mono 16 kHz
+    var FENETRE_RECHERCHE_SILENCE_SECONDES = 30;   // on cherche un silence dans les 30 s avant la coupe
+    var DUREE_TRANCHE_VOLUME_SECONDES = 0.02;      // le volume est mesuré par tranches de 20 ms
+    var DELAI_MAX_ATTENTE_QUOTA_SECONDES = 900;    // au-delà de 15 min d'attente, on s'arrête
+    var LONGUEUR_CONTEXTE_CARACTERES = 200;        // fin du texte précédent envoyée à Whisper
+
+    // Garde le travail en cours, pour pouvoir reprendre là où on s'est arrêté.
+    var travailDecoupe = null; // { fichier, morceaux: [{debut, fin}], echantillons, textes: [] }
+
+    // Décode le fichier directement à 16 000 Hz, puis le ramène en mono.
+    // Renvoie un Float32Array d'échantillons.
+    function decoderEnMono16k(fichierAudio) {
+      return fichierAudio.arrayBuffer().then(function (donnees) {
+        var contexte = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, FREQUENCE_DECOUPAGE);
+        return new Promise(function (resoudre, rejeter) {
+          var promesse = contexte.decodeAudioData(donnees, resoudre, rejeter);
+          if (promesse && promesse.then) promesse.then(resoudre, rejeter);
+        });
+      }).then(function (tampon) {
+        var mono = tampon.getChannelData(0);
+        if (tampon.numberOfChannels > 1) {
+          // Mélange les canaux directement dans le premier, sans nouvelle copie en mémoire.
+          var nombreCanaux = tampon.numberOfChannels;
+          for (var c = 1; c < nombreCanaux; c++) {
+            var canal = tampon.getChannelData(c);
+            for (var i = 0; i < mono.length; i++) mono[i] += canal[i];
+          }
+          for (var j = 0; j < mono.length; j++) mono[j] /= nombreCanaux;
+        }
+        return mono;
+      }).catch(function () {
+        throw erreurTranscription('Impossible de décoder ce fichier sur ce téléphone (fichier trop long pour la mémoire disponible, ou format illisible).');
+      });
+    }
+
+    // Cherche le moment le plus silencieux dans les secondes qui précèdent la position cible.
+    // Renvoie la position (en échantillons) où couper.
+    function trouverPointDeCoupe(echantillons, cible) {
+      var tailleTranche = Math.round(DUREE_TRANCHE_VOLUME_SECONDES * FREQUENCE_DECOUPAGE);
+      var debutRecherche = Math.max(0, cible - FENETRE_RECHERCHE_SILENCE_SECONDES * FREQUENCE_DECOUPAGE);
+      var meilleurePosition = cible;
+      var volumeMinimal = Infinity;
+      for (var position = debutRecherche; position + tailleTranche <= cible; position += tailleTranche) {
+        var somme = 0;
+        for (var i = position; i < position + tailleTranche; i++) somme += echantillons[i] * echantillons[i];
+        if (somme < volumeMinimal) {
+          volumeMinimal = somme;
+          meilleurePosition = position + Math.floor(tailleTranche / 2);
+        }
+      }
+      return meilleurePosition;
+    }
+
+    // Calcule les limites des morceaux : environ 10 minutes, coupés dans un silence.
+    function decouperAudio(echantillons) {
+      var morceaux = [];
+      var longueurMax = DUREE_MORCEAU_SECONDES * FREQUENCE_DECOUPAGE;
+      var debut = 0;
+      while (debut < echantillons.length) {
+        var fin = echantillons.length;
+        if (fin - debut > longueurMax) fin = trouverPointDeCoupe(echantillons, debut + longueurMax);
+        if (fin <= debut) fin = Math.min(echantillons.length, debut + longueurMax);
+        morceaux.push({ debut: debut, fin: fin });
+        debut = fin;
+      }
+      return morceaux;
+    }
+
+    // Fabrique un fichier WAV (mono, 16 bits) à partir d'échantillons.
+    function encoderWav(echantillons, frequence) {
+      var tampon = new ArrayBuffer(44 + echantillons.length * 2);
+      var vue = new DataView(tampon);
+      function ecrireTexte(position, texte) {
+        for (var i = 0; i < texte.length; i++) vue.setUint8(position + i, texte.charCodeAt(i));
+      }
+      ecrireTexte(0, 'RIFF');
+      vue.setUint32(4, 36 + echantillons.length * 2, true);
+      ecrireTexte(8, 'WAVE');
+      ecrireTexte(12, 'fmt ');
+      vue.setUint32(16, 16, true);
+      vue.setUint16(20, 1, true);              // PCM
+      vue.setUint16(22, 1, true);              // mono
+      vue.setUint32(24, frequence, true);
+      vue.setUint32(28, frequence * 2, true);
+      vue.setUint16(32, 2, true);
+      vue.setUint16(34, 16, true);
+      ecrireTexte(36, 'data');
+      vue.setUint32(40, echantillons.length * 2, true);
+      for (var i = 0, position = 44; i < echantillons.length; i++, position += 2) {
+        var valeur = Math.max(-1, Math.min(1, echantillons[i]));
+        vue.setInt16(position, valeur < 0 ? valeur * 0x8000 : valeur * 0x7FFF, true);
+      }
+      return new Blob([tampon], { type: 'audio/wav' });
+    }
+
+    // Lit le délai demandé par Groq : en-tête retry-after, ou message du type « try again in 1m2.5s ».
+    function lireDelaiAttenteQuota(enTete, message) {
+      if (enTete && !isNaN(parseFloat(enTete))) return Math.ceil(parseFloat(enTete));
+      var correspondance = /try again in\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?/i.exec(message || '');
+      if (!correspondance || !(correspondance[1] || correspondance[2] || correspondance[3])) return null;
+      return Math.ceil((parseInt(correspondance[1] || 0, 10) * 3600) +
+        (parseInt(correspondance[2] || 0, 10) * 60) + parseFloat(correspondance[3] || 0));
+    }
+
+    function formaterAttente(secondes) {
+      if (secondes >= 3600) return Math.floor(secondes / 3600) + ' h ' + Math.round((secondes % 3600) / 60) + ' min';
+      if (secondes >= 60) return Math.floor(secondes / 60) + ' min ' + String(secondes % 60).padStart(2, '0') + ' s';
+      return secondes + ' s';
+    }
+
+    function formaterDureeLongue(secondes) {
+      var heures = Math.floor(secondes / 3600);
+      var minutes = Math.round((secondes % 3600) / 60);
+      return heures ? heures + ' h ' + String(minutes).padStart(2, '0') : minutes + ' min';
+    }
+
+    // Attend la fin du délai imposé par le quota, avec un compte à rebours.
+    function attendreQuota(secondes, afficher) {
+      return new Promise(function (resoudre) {
+        var restant = secondes;
+        afficher(restant);
+        var minuteur = setInterval(function () {
+          restant--;
+          if (restant <= 0) { clearInterval(minuteur); resoudre(); return; }
+          afficher(restant);
+        }, 1000);
+      });
+    }
+
+    function textePartielDecoupe() {
+      return travailDecoupe.textes.filter(function (t) { return t; }).join(' ');
+    }
+
+    // Transcrit un long fichier morceau par morceau, un seul à la fois.
+    // Si le même fichier a déjà été commencé, reprend au premier morceau non transcrit.
+    function transcrireParMorceaux(fichierAudio, suivi) {
+      var preparation;
+      if (travailDecoupe && travailDecoupe.fichier === fichierAudio) {
+        preparation = Promise.resolve();
+      } else {
+        travailDecoupe = null;
+        suivi('Préparation : décodage du fichier (peut prendre une minute)…', '');
+        preparation = decoderEnMono16k(fichierAudio).then(function (echantillons) {
+          travailDecoupe = {
+            fichier: fichierAudio,
+            echantillons: echantillons,
+            morceaux: decouperAudio(echantillons),
+            textes: []
+          };
+        });
+      }
+
+      return preparation.then(function () {
+        var morceaux = travailDecoupe.morceaux;
+        var dureeTotale = travailDecoupe.echantillons.length / FREQUENCE_DECOUPAGE;
+        var estimation = formaterDureeLongue(dureeTotale) + ', ' + morceaux.length + ' morceaux, environ ' +
+          formaterDureeLongue(dureeTotale) + ' de quota Groq';
+
+        function traiterMorceau(index) {
+          if (index >= morceaux.length) {
+            var texteFinal = textePartielDecoupe();
+            travailDecoupe = null; // libère la mémoire
+            return texteFinal;
+          }
+          if (travailDecoupe.textes[index] !== undefined) return traiterMorceau(index + 1);
+
+          suivi(estimation + '. Morceau ' + (index + 1) + ' sur ' + morceaux.length + '…', textePartielDecoupe());
+          var morceau = morceaux[index];
+          var wav = encoderWav(travailDecoupe.echantillons.subarray(morceau.debut, morceau.fin), FREQUENCE_DECOUPAGE);
+          var contexte = textePartielDecoupe().slice(-LONGUEUR_CONTEXTE_CARACTERES);
+
+          return transcrireAvecWhisper(wav, 'morceau-' + (index + 1) + '.wav', contexte).then(function (texte) {
+            travailDecoupe.textes[index] = texte;
+            return traiterMorceau(index + 1);
+          }, function (erreur) {
+            var attente = erreur.attenteSecondes;
+            if (erreur.quotaAtteint && attente !== null && attente !== undefined && attente <= DELAI_MAX_ATTENTE_QUOTA_SECONDES) {
+              return attendreQuota(attente + 1, function (restant) {
+                suivi('Quota Groq atteint. Reprise automatique du morceau ' + (index + 1) + ' sur ' +
+                  morceaux.length + ' dans ' + formaterAttente(restant) + '…', textePartielDecoupe());
+              }).then(function () { return traiterMorceau(index); });
+            }
+            erreur.repriseePossible = true;
+            erreur.messageUtilisateur = (erreur.messageUtilisateur || erreur.message) +
+              ' Morceaux transcrits : ' + travailDecoupe.textes.filter(function (t) { return t !== undefined; }).length +
+              ' sur ' + morceaux.length + '. Appuie sur « Reprendre » pour continuer.';
+            throw erreur;
+          });
+        }
+        return traiterMorceau(0);
+      });
     }
 
     // ---------- Importer un fichier audio ----------
@@ -744,7 +946,10 @@
       boutonRelancerTranscriptionImport.hidden = true;
       afficherMessageDans(messageTranscriptionImport, 'Transcription en cours…', '');
 
-      transcrireAudio(fichierImporte, nomFichierImportePourGroq).then(function (texte) {
+      transcrireAudio(fichierImporte, nomFichierImportePourGroq, function (message, textePartiel) {
+        afficherMessageDans(messageTranscriptionImport, message, '');
+        texteTranscriptionImport.textContent = textePartiel;
+      }).then(function (texte) {
         transcriptionImportEnCours = false;
         boutonTranscrireImport.disabled = false;
         if (!texte) {
@@ -758,6 +963,7 @@
         transcriptionImportEnCours = false;
         boutonTranscrireImport.disabled = false;
         afficherMessageDans(messageTranscriptionImport, erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
+        boutonRelancerTranscriptionImport.textContent = erreur.repriseePossible ? 'Reprendre la transcription' : 'Relancer la transcription';
         boutonRelancerTranscriptionImport.hidden = false;
       });
     }
