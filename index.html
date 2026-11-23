@@ -108,6 +108,8 @@
     }
     .texte-transcription:not(:empty) { margin-top: 8px; }
     .zone-transcription .bouton-secondaire { width: 100%; margin-top: 12px; }
+    .bouton-fichier { display: block; text-align: center; margin-top: 24px; }
+    .bouton-pleine-largeur { width: 100%; margin-top: 12px; }
 
     /* Formulaires et boutons */
     .etiquette { display: block; margin: 24px 0 8px; font-weight: 600; }
@@ -211,7 +213,25 @@
 
     <section id="ecran-importer" class="ecran">
       <h2>Importer</h2>
-      <p>Ici, tu pourras choisir un fichier audio sur ton téléphone et le faire transcrire, quelle que soit sa durée.</p>
+      <p>Choisis un fichier audio sur ton téléphone (mp3, m4a, wav, ogg, opus, webm, flac, mp4), puis lance la transcription.</p>
+
+      <label for="champ-fichier-import" class="bouton-principal bouton-fichier">Choisir un fichier audio</label>
+      <input id="champ-fichier-import" type="file" accept="audio/*,video/mp4,.mp3,.m4a,.mp4,.wav,.ogg,.opus,.webm,.flac,.mpeg,.mpga" hidden>
+
+      <p id="message-import" class="message" role="status"></p>
+
+      <div id="zone-fichier-import" class="zone-reecoute" hidden>
+        <audio id="lecteur-import" controls preload="metadata"></audio>
+        <p id="infos-fichier-import" class="infos"></p>
+        <button type="button" id="bouton-transcrire-import" class="bouton-principal bouton-pleine-largeur">Transcrire</button>
+      </div>
+
+      <div id="zone-transcription-import" class="zone-transcription" hidden>
+        <div class="titre-zone">Transcription</div>
+        <p id="message-transcription-import" class="message" role="status"></p>
+        <div id="texte-transcription-import" class="texte-transcription"></div>
+        <button type="button" id="bouton-relancer-transcription-import" class="bouton-secondaire" hidden>Relancer la transcription</button>
+      </div>
     </section>
 
     <section id="ecran-historique" class="ecran">
@@ -604,7 +624,7 @@
       afficherMessageTranscription('Transcription en cours…', '');
 
       var nomFichier = 'enregistrement.' + extensionPourFormat(audioEnregistre.type);
-      transcrireAvecWhisper(audioEnregistre, nomFichier).then(function (texte) {
+      transcrireAudio(audioEnregistre, nomFichier).then(function (texte) {
         transcriptionEnCours = false;
         if (!texte) {
           afficherMessageTranscription('Aucune parole détectée dans l\'enregistrement.', 'erreur');
@@ -621,6 +641,129 @@
     }
 
     boutonRelancerTranscription.addEventListener('click', transcrireEnregistrement);
+
+    // Point d'entrée unique pour transcrire un son, qu'il vienne du micro ou d'un fichier importé.
+    // Étape 7 : envoi direct si le fichier fait moins de 25 Mo.
+    // Étape 8 : le découpage en morceaux sera ajouté ici, pour les deux écrans à la fois.
+    function transcrireAudio(fichierAudio, nomFichier) {
+      if (fichierAudio.size > TAILLE_MAX_FICHIER_GROQ) {
+        return Promise.reject(erreurTranscription('Fichier trop long (' +
+          (fichierAudio.size / (1024 * 1024)).toFixed(1) +
+          ' Mo, maximum 25 Mo). Le découpage en morceaux arrive à l\'étape 8.'));
+      }
+      return transcrireAvecWhisper(fichierAudio, nomFichier);
+    }
+
+    // ---------- Importer un fichier audio ----------
+    // Formats acceptés par Groq. « opus » (messages vocaux WhatsApp) est envoyé sous le nom « .ogg ».
+    var EXTENSIONS_ACCEPTEES = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'wav', 'webm'];
+    var fichierImporte = null;      // le fichier choisi (File)
+    var nomFichierImportePourGroq = '';
+    var transcriptionImportEnCours = false;
+
+    var champFichierImport = document.getElementById('champ-fichier-import');
+    var messageImport = document.getElementById('message-import');
+    var zoneFichierImport = document.getElementById('zone-fichier-import');
+    var lecteurImport = document.getElementById('lecteur-import');
+    var infosFichierImport = document.getElementById('infos-fichier-import');
+    var boutonTranscrireImport = document.getElementById('bouton-transcrire-import');
+    var zoneTranscriptionImport = document.getElementById('zone-transcription-import');
+    var messageTranscriptionImport = document.getElementById('message-transcription-import');
+    var texteTranscriptionImport = document.getElementById('texte-transcription-import');
+    var boutonRelancerTranscriptionImport = document.getElementById('bouton-relancer-transcription-import');
+
+    function afficherMessageDans(element, texte, type) {
+      element.textContent = texte;
+      element.className = 'message' + (type ? ' ' + type : '');
+      element.hidden = !texte;
+    }
+
+    // Renvoie le nom à donner au fichier pour Groq, ou '' si le format n'est pas accepté.
+    function nomFichierPourGroq(fichier) {
+      var morceaux = fichier.name.toLowerCase().split('.');
+      var extension = morceaux.length > 1 ? morceaux.pop() : '';
+      var base = morceaux.join('.') || 'fichier';
+      if (!extension && /^(audio|video)\//.test(fichier.type)) extension = extensionPourFormat(fichier.type);
+      if (EXTENSIONS_ACCEPTEES.indexOf(extension) === -1) return '';
+      if (extension === 'opus') extension = 'ogg';
+      return base + '.' + extension;
+    }
+
+    function formaterTaille(octets) {
+      return (octets / (1024 * 1024)).toFixed(1) + ' Mo';
+    }
+
+    champFichierImport.addEventListener('change', function () {
+      var fichier = champFichierImport.files && champFichierImport.files[0];
+      champFichierImport.value = ''; // permet de rechoisir le même fichier
+      if (!fichier) return;
+
+      zoneTranscriptionImport.hidden = true;
+      var nomPourGroq = nomFichierPourGroq(fichier);
+      if (!nomPourGroq) {
+        fichierImporte = null;
+        zoneFichierImport.hidden = true;
+        afficherMessageDans(messageImport, 'Format non pris en charge (' + fichier.name +
+          '). Formats acceptés : mp3, m4a, mp4, wav, ogg, opus, webm, flac.', 'erreur');
+        return;
+      }
+
+      fichierImporte = fichier;
+      nomFichierImportePourGroq = nomPourGroq;
+      afficherMessageDans(messageImport, '', '');
+      if (lecteurImport.src) URL.revokeObjectURL(lecteurImport.src);
+      lecteurImport.src = URL.createObjectURL(fichier);
+      corrigerDureeLecteur(lecteurImport);
+      infosFichierImport.textContent = fichier.name + ' · ' + formaterTaille(fichier.size);
+      zoneFichierImport.hidden = false;
+      boutonTranscrireImport.disabled = false;
+
+      if (fichier.size > TAILLE_MAX_FICHIER_GROQ) {
+        afficherMessageDans(messageImport, 'Ce fichier fait plus de 25 Mo : il faudra le découpage en morceaux (étape 8).', 'erreur');
+      }
+    });
+
+    // Ajoute la durée aux informations dès que le lecteur la connaît.
+    lecteurImport.addEventListener('durationchange', function () {
+      if (!fichierImporte || !isFinite(lecteurImport.duration)) return;
+      infosFichierImport.textContent = fichierImporte.name + ' · ' + formaterTaille(fichierImporte.size) +
+        ' · Durée : ' + formaterDuree(lecteurImport.duration);
+    });
+
+    lecteurImport.addEventListener('error', function () {
+      if (!fichierImporte || messageImport.textContent) return; // ne pas masquer un message plus important
+      afficherMessageDans(messageImport, 'Le téléphone ne sait pas lire ce fichier, mais Groq pourra peut-être le transcrire.', '');
+    });
+
+    function transcrireFichierImporte() {
+      if (!fichierImporte || transcriptionImportEnCours) return;
+      transcriptionImportEnCours = true;
+      boutonTranscrireImport.disabled = true;
+      zoneTranscriptionImport.hidden = false;
+      texteTranscriptionImport.textContent = '';
+      boutonRelancerTranscriptionImport.hidden = true;
+      afficherMessageDans(messageTranscriptionImport, 'Transcription en cours…', '');
+
+      transcrireAudio(fichierImporte, nomFichierImportePourGroq).then(function (texte) {
+        transcriptionImportEnCours = false;
+        boutonTranscrireImport.disabled = false;
+        if (!texte) {
+          afficherMessageDans(messageTranscriptionImport, 'Aucune parole détectée dans ce fichier.', 'erreur');
+          boutonRelancerTranscriptionImport.hidden = false;
+          return;
+        }
+        afficherMessageDans(messageTranscriptionImport, '', '');
+        texteTranscriptionImport.textContent = texte;
+      }).catch(function (erreur) {
+        transcriptionImportEnCours = false;
+        boutonTranscrireImport.disabled = false;
+        afficherMessageDans(messageTranscriptionImport, erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
+        boutonRelancerTranscriptionImport.hidden = false;
+      });
+    }
+
+    boutonTranscrireImport.addEventListener('click', transcrireFichierImporte);
+    boutonRelancerTranscriptionImport.addEventListener('click', transcrireFichierImporte);
 
     // ---------- Transcription en direct (Web Speech API) ----------
     // Désactivée : sur Android, le micro ne peut pas servir à la fois à l'enregistrement et au direct.
