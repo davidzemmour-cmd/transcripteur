@@ -83,6 +83,15 @@
     .zone-reecoute { margin-top: 24px; }
     .zone-reecoute audio { width: 100%; }
     .infos { margin-top: 8px !important; font-size: 14px; }
+    .zone-texte-direct {
+      margin-top: 16px;
+      background: var(--couleur-carte);
+      border: 1px solid var(--couleur-bordure);
+      padding: 12px;
+    }
+    .titre-zone { font-size: 13px; font-weight: 600; color: var(--couleur-texte-discret); margin-bottom: 8px; }
+    .texte-direct { min-height: 3em; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .texte-provisoire { color: #9e9e9e; }
 
     /* Formulaires et boutons */
     .etiquette { display: block; margin: 24px 0 8px; font-weight: 600; }
@@ -164,6 +173,12 @@
       </div>
 
       <p id="message-enregistrement" class="message" role="status"></p>
+
+      <div id="zone-texte-direct" class="zone-texte-direct" hidden>
+        <div class="titre-zone">Texte en direct (provisoire)</div>
+        <div class="texte-direct"><span id="texte-direct-final"></span><span id="texte-direct-provisoire" class="texte-provisoire"></span></div>
+      </div>
+      <p id="message-direct" class="infos"></p>
 
       <div id="zone-reecoute" class="zone-reecoute" hidden>
         <audio id="lecteur-audio" controls preload="metadata"></audio>
@@ -375,6 +390,7 @@
         boutonEnregistrer.textContent = 'Arrêter';
         boutonEnregistrer.classList.add('en-cours');
         afficherMessageEnregistrement('Enregistrement en cours…', '');
+        demarrerTranscriptionDirecte();
       }).catch(function (erreur) {
         if (erreur && (erreur.name === 'NotAllowedError' || erreur.name === 'SecurityError')) {
           afficherMessageEnregistrement('Accès au micro refusé. Autorise le micro pour ce site dans les réglages du navigateur.', 'erreur');
@@ -395,6 +411,7 @@
     // Appelée quand l'enregistreur s'arrête : assemble le son et prépare la réécoute.
     function terminerEnregistrement() {
       clearInterval(minuteurChrono);
+      arreterTranscriptionDirecte();
       var dureeSecondes = (Date.now() - debutEnregistrement) / 1000;
       if (fluxMicro) {
         fluxMicro.getTracks().forEach(function (piste) { piste.stop(); });
@@ -420,6 +437,92 @@
         ' · Taille : ' + tailleMo + ' Mo · Format : ' + type.split(';')[0];
       zoneReecoute.hidden = false;
       afficherMessageEnregistrement('Enregistrement terminé. Tu peux le réécouter.', 'succes');
+    }
+
+    // ---------- Transcription en direct (Web Speech API) ----------
+    var ClasseReconnaissance = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var reconnaissanceVocale = null;  // l'objet de reconnaissance en cours
+    var texteDirectFinal = '';        // le texte confirmé depuis le début de l'enregistrement
+    var directActif = false;          // vrai tant que l'enregistrement tourne
+    var directIndisponible = false;   // vrai si le navigateur refuse le direct
+
+    var zoneTexteDirect = document.getElementById('zone-texte-direct');
+    var elementTexteFinal = document.getElementById('texte-direct-final');
+    var elementTexteProvisoire = document.getElementById('texte-direct-provisoire');
+    var messageDirect = document.getElementById('message-direct');
+
+    function demarrerTranscriptionDirecte() {
+      texteDirectFinal = '';
+      elementTexteFinal.textContent = '';
+      elementTexteProvisoire.textContent = '';
+      messageDirect.textContent = '';
+      directIndisponible = false;
+
+      if (!ClasseReconnaissance) {
+        zoneTexteDirect.hidden = true;
+        messageDirect.textContent = 'Direct indisponible sur ce navigateur. L\'enregistrement continue normalement.';
+        return;
+      }
+      zoneTexteDirect.hidden = false;
+      directActif = true;
+      lancerReconnaissance();
+    }
+
+    // Crée et démarre une session de reconnaissance. Elle est relancée tant que directActif est vrai.
+    function lancerReconnaissance() {
+      reconnaissanceVocale = new ClasseReconnaissance();
+      reconnaissanceVocale.lang = 'fr-FR';
+      reconnaissanceVocale.continuous = true;
+      reconnaissanceVocale.interimResults = true;
+
+      reconnaissanceVocale.onresult = function (evenement) {
+        var provisoire = '';
+        for (var i = evenement.resultIndex; i < evenement.results.length; i++) {
+          var morceau = evenement.results[i][0].transcript;
+          if (evenement.results[i].isFinal) {
+            texteDirectFinal += (texteDirectFinal && !/\s$/.test(texteDirectFinal) ? ' ' : '') + morceau.trim();
+          } else {
+            provisoire += morceau;
+          }
+        }
+        elementTexteFinal.textContent = texteDirectFinal;
+        elementTexteProvisoire.textContent = provisoire ? (texteDirectFinal ? ' ' : '') + provisoire.trim() : '';
+      };
+
+      reconnaissanceVocale.onerror = function (evenement) {
+        if (evenement.error === 'not-allowed' || evenement.error === 'service-not-allowed' || evenement.error === 'language-not-supported') {
+          directIndisponible = true;
+          messageDirect.textContent = 'Direct indisponible sur ce navigateur (' + evenement.error + '). L\'enregistrement continue normalement.';
+        } else if (evenement.error === 'network') {
+          messageDirect.textContent = 'Direct interrompu : problème de connexion. Nouvel essai…';
+        }
+        // 'no-speech' et 'aborted' sont normaux : la relance automatique s'en occupe.
+      };
+
+      reconnaissanceVocale.onend = function () {
+        elementTexteProvisoire.textContent = '';
+        if (directActif && !directIndisponible) {
+          setTimeout(function () {
+            if (!directActif) return;
+            try { lancerReconnaissance(); } catch (erreur) {}
+          }, 300);
+        }
+      };
+
+      try {
+        reconnaissanceVocale.start();
+      } catch (erreur) {
+        directIndisponible = true;
+        messageDirect.textContent = 'Direct indisponible sur ce navigateur. L\'enregistrement continue normalement.';
+      }
+    }
+
+    function arreterTranscriptionDirecte() {
+      directActif = false;
+      if (reconnaissanceVocale) {
+        try { reconnaissanceVocale.stop(); } catch (erreur) {}
+        reconnaissanceVocale = null;
+      }
     }
 
     boutonEnregistrer.addEventListener('click', function () {
