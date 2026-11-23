@@ -165,7 +165,7 @@
   <main>
     <section id="ecran-enregistrer" class="ecran">
       <h2>Enregistrer</h2>
-      <p>Appuie sur le bouton pour enregistrer avec le micro, puis réécoute ton enregistrement.</p>
+      <p>Appuie sur le bouton, attends qu'il passe au rouge, puis parle. Tu pourras réécouter ton enregistrement.</p>
 
       <div class="zone-enregistrement">
         <button type="button" id="bouton-enregistrer" class="bouton-micro">Démarrer</button>
@@ -332,6 +332,10 @@
     var fluxMicro = null;           // le flux du micro, à couper à l'arrêt
     var debutEnregistrement = 0;
     var minuteurChrono = null;
+    var enPreparation = false;      // vrai entre l'appui sur Démarrer et le vrai début
+    var enFinalisation = false;     // vrai entre l'appui sur Arrêter et le vrai arrêt
+    var DELAI_CHAUFFE_MICRO = 300;          // ms d'attente après l'ouverture du micro, avant d'enregistrer
+    var DELAI_FIN_ENREGISTREMENT = 700;     // ms enregistrées en plus après l'appui sur Arrêter
 
     var boutonEnregistrer = document.getElementById('bouton-enregistrer');
     var chronoEnregistrement = document.getElementById('chrono-enregistrement');
@@ -371,9 +375,16 @@
         afficherMessageEnregistrement('Ce navigateur ne sait pas enregistrer le micro.', 'erreur');
         return;
       }
-      afficherMessageEnregistrement('', '');
+      afficherMessageEnregistrement('Préparation du micro…', '');
+      enPreparation = true;
+      boutonEnregistrer.disabled = true;
+      boutonEnregistrer.textContent = 'Patiente…';
       navigator.mediaDevices.getUserMedia({ audio: true }).then(function (flux) {
         fluxMicro = flux;
+        // Temps de chauffe : on laisse le micro se stabiliser avant d'enregistrer.
+        return new Promise(function (resoudre) { setTimeout(resoudre, DELAI_CHAUFFE_MICRO); });
+      }).then(function () {
+        var flux = fluxMicro;
         morceauxAudio = [];
         var format = choisirFormatAudio();
         enregistreurAudio = format ? new MediaRecorder(flux, { mimeType: format }) : new MediaRecorder(flux);
@@ -387,11 +398,20 @@
         debutEnregistrement = Date.now();
         chronoEnregistrement.textContent = '00:00';
         minuteurChrono = setInterval(mettreAJourChrono, 250);
+        enPreparation = false;
+        boutonEnregistrer.disabled = false;
         boutonEnregistrer.textContent = 'Arrêter';
         boutonEnregistrer.classList.add('en-cours');
-        afficherMessageEnregistrement('Enregistrement en cours…', '');
-        demarrerTranscriptionDirecte();
+        afficherMessageEnregistrement('Enregistrement en cours… Tu peux parler.', '');
+        if (TRANSCRIPTION_DIRECTE_ACTIVEE) demarrerTranscriptionDirecte();
       }).catch(function (erreur) {
+        enPreparation = false;
+        boutonEnregistrer.disabled = false;
+        boutonEnregistrer.textContent = 'Démarrer';
+        if (fluxMicro) {
+          fluxMicro.getTracks().forEach(function (piste) { piste.stop(); });
+          fluxMicro = null;
+        }
         if (erreur && (erreur.name === 'NotAllowedError' || erreur.name === 'SecurityError')) {
           afficherMessageEnregistrement('Accès au micro refusé. Autorise le micro pour ce site dans les réglages du navigateur.', 'erreur');
         } else if (erreur && erreur.name === 'NotFoundError') {
@@ -402,10 +422,19 @@
       });
     }
 
+    // On continue d'enregistrer un court instant après l'appui sur Arrêter,
+    // pour ne pas couper les derniers sons encore en route dans le téléphone.
     function arreterEnregistrement() {
-      if (enregistreurAudio && enregistreurAudio.state !== 'inactive') {
-        enregistreurAudio.stop(); // déclenche terminerEnregistrement
-      }
+      if (!enregistreurAudio || enregistreurAudio.state === 'inactive' || enFinalisation) return;
+      enFinalisation = true;
+      boutonEnregistrer.disabled = true;
+      boutonEnregistrer.textContent = 'Finalisation…';
+      afficherMessageEnregistrement('Finalisation…', '');
+      setTimeout(function () {
+        if (enregistreurAudio && enregistreurAudio.state !== 'inactive') {
+          enregistreurAudio.stop(); // déclenche terminerEnregistrement
+        }
+      }, DELAI_FIN_ENREGISTREMENT);
     }
 
     // Appelée quand l'enregistreur s'arrête : assemble le son et prépare la réécoute.
@@ -421,6 +450,8 @@
       audioEnregistre = new Blob(morceauxAudio, { type: type });
       enregistreurAudio = null;
 
+      enFinalisation = false;
+      boutonEnregistrer.disabled = false;
       boutonEnregistrer.textContent = 'Démarrer';
       boutonEnregistrer.classList.remove('en-cours');
 
@@ -457,6 +488,9 @@
     }
 
     // ---------- Transcription en direct (Web Speech API) ----------
+    // Désactivée : sur Android, le micro ne peut pas servir à la fois à l'enregistrement et au direct.
+    // Le code est conservé pour un éventuel « faux direct » plus tard. Mettre à true pour la réactiver.
+    var TRANSCRIPTION_DIRECTE_ACTIVEE = false;
     var ClasseReconnaissance = window.SpeechRecognition || window.webkitSpeechRecognition;
     var reconnaissanceVocale = null;  // l'objet de reconnaissance en cours
     var texteDirectFinal = '';        // le texte confirmé depuis le début de l'enregistrement
@@ -590,6 +624,7 @@
     }
 
     boutonEnregistrer.addEventListener('click', function () {
+      if (enPreparation || enFinalisation) return;
       if (enregistreurAudio && enregistreurAudio.state === 'recording') {
         arreterEnregistrement();
       } else {
