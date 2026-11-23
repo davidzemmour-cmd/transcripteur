@@ -2,26 +2,34 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Transcripteur</title>
   <style>
     :root {
       --couleur-fond: #f6f6f6;
       --couleur-texte: #141414;
+      --couleur-texte-discret: #595959;
       --couleur-bandeau: #141414;
       --couleur-accent: #2b6cb0;
+      --couleur-carte: #ffffff;
+      --couleur-bordure: #dddddd;
+      --hauteur-navigation: 64px;
     }
     * { box-sizing: border-box; }
+    html, body { margin: 0; }
     body {
-      margin: 0;
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       background: var(--couleur-fond);
       color: var(--couleur-texte);
+      overflow-x: hidden;
     }
+
+    /* Bandeau du haut */
     header {
       background: var(--couleur-bandeau);
       color: #ffffff;
       padding: 16px;
+      padding-top: calc(16px + env(safe-area-inset-top));
       display: flex;
       align-items: center;
       gap: 12px;
@@ -30,9 +38,54 @@
       width: 28px;
       height: 28px;
       background: var(--couleur-accent);
+      flex-shrink: 0;
     }
     header h1 { margin: 0; font-size: 20px; }
-    main { padding: 24px 16px; }
+
+    /* Zone des écrans */
+    main {
+      padding: 24px 16px;
+      padding-bottom: calc(var(--hauteur-navigation) + 24px + env(safe-area-inset-bottom));
+    }
+    .ecran { display: none; }
+    .ecran.actif { display: block; }
+    .ecran h2 { margin: 0 0 12px; font-size: 22px; }
+    .ecran p { margin: 0; color: var(--couleur-texte-discret); line-height: 1.5; }
+
+    /* Barre de navigation du bas */
+    nav {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      background: var(--couleur-carte);
+      border-top: 1px solid var(--couleur-bordure);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    nav button {
+      flex: 1;
+      min-width: 0;
+      height: var(--hauteur-navigation);
+      border: none;
+      background: none;
+      font: inherit;
+      font-size: 13px;
+      color: var(--couleur-texte-discret);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      cursor: pointer;
+      border-top: 3px solid transparent;
+    }
+    nav button .icone { font-size: 20px; line-height: 1; }
+    nav button.actif {
+      color: var(--couleur-accent);
+      border-top-color: var(--couleur-accent);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -40,8 +93,55 @@
     <div class="logo"></div>
     <h1>Transcripteur</h1>
   </header>
+
   <main>
-    <p>Transcripteur, version de test.</p>
+    <section id="ecran-enregistrer" class="ecran">
+      <h2>Enregistrer</h2>
+      <p>Ici, tu pourras enregistrer avec le micro, voir le texte en direct, puis obtenir la transcription de qualité.</p>
+    </section>
+
+    <section id="ecran-importer" class="ecran">
+      <h2>Importer</h2>
+      <p>Ici, tu pourras choisir un fichier audio sur ton téléphone et le faire transcrire, quelle que soit sa durée.</p>
+    </section>
+
+    <section id="ecran-historique" class="ecran">
+      <h2>Historique</h2>
+      <p>Ici, tu retrouveras tes transcriptions enregistrées sur ce téléphone.</p>
+    </section>
+
+    <section id="ecran-reglages" class="ecran">
+      <h2>Réglages</h2>
+      <p>Ici, tu saisiras ta clé API Groq. Elle restera uniquement sur ce téléphone.</p>
+    </section>
   </main>
+
+  <nav>
+    <button type="button" data-ecran="enregistrer"><span class="icone">🎙️</span>Enregistrer</button>
+    <button type="button" data-ecran="importer"><span class="icone">📂</span>Importer</button>
+    <button type="button" data-ecran="historique"><span class="icone">🕘</span>Historique</button>
+    <button type="button" data-ecran="reglages"><span class="icone">⚙️</span>Réglages</button>
+  </nav>
+
+  <script>
+    // Affiche l'écran demandé ("enregistrer", "importer", "historique" ou "reglages")
+    // et met son bouton de navigation en surbrillance.
+    function afficherEcran(nomEcran) {
+      document.querySelectorAll('.ecran').forEach(function (ecran) {
+        ecran.classList.toggle('actif', ecran.id === 'ecran-' + nomEcran);
+      });
+      document.querySelectorAll('nav button').forEach(function (bouton) {
+        bouton.classList.toggle('actif', bouton.dataset.ecran === nomEcran);
+      });
+    }
+
+    document.querySelectorAll('nav button').forEach(function (bouton) {
+      bouton.addEventListener('click', function () {
+        afficherEcran(bouton.dataset.ecran);
+      });
+    });
+
+    afficherEcran('enregistrer');
+  </script>
 </body>
 </html>
