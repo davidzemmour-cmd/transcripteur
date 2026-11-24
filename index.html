@@ -142,6 +142,44 @@
     .message.succes { color: var(--couleur-succes) !important; }
     .message.erreur { color: var(--couleur-erreur) !important; }
 
+    /* Historique */
+    .ligne-boutons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    .ligne-boutons > button { flex: 1 1 auto; min-width: 0; }
+    .bouton-danger {
+      font: inherit; font-size: 16px; padding: 12px 16px; cursor: pointer;
+      background: var(--couleur-carte); color: var(--couleur-erreur); border: 1px solid var(--couleur-erreur);
+    }
+    .bouton-danger.confirmation { background: var(--couleur-erreur); color: #ffffff; }
+    .bouton-danger:disabled { opacity: 0.4; cursor: default; }
+    .bouton-lien {
+      font: inherit; font-size: 16px; padding: 8px 0; border: none; background: none;
+      color: var(--couleur-accent); cursor: pointer;
+    }
+    .liste-historique { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+    .carte-historique {
+      display: flex; gap: 12px; align-items: flex-start;
+      background: var(--couleur-carte); border: 1px solid var(--couleur-bordure);
+      padding: 12px; cursor: pointer;
+    }
+    .carte-historique input[type="checkbox"] { display: none; width: 22px; height: 22px; margin: 0; flex-shrink: 0; }
+    .mode-selection .carte-historique input[type="checkbox"] { display: block; }
+    .carte-historique.selectionnee { border-color: var(--couleur-accent); }
+    .contenu-carte { flex: 1; min-width: 0; }
+    .entete-carte { font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+    .extrait-carte {
+      margin-top: 4px; font-size: 14px; color: var(--couleur-texte-discret); line-height: 1.4;
+      overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow-wrap: anywhere;
+    }
+    .etiquette-statut {
+      font-size: 12px; font-weight: 600; padding: 2px 6px;
+      background: #fff3e0; color: #8a4b00; border: 1px solid #f0c890;
+    }
+    .titre-detail { margin: 8px 0 4px; font-size: 20px; }
+    .sous-titre { font-size: 14px; }
+    .ligne-case { display: flex; gap: 12px; align-items: flex-start; margin-top: 24px; line-height: 1.4; cursor: pointer; }
+    .ligne-case input { width: 22px; height: 22px; margin: 0; flex-shrink: 0; }
+
     /* Barre de navigation du bas */
     nav {
       position: fixed;
@@ -249,8 +287,48 @@
     </section>
 
     <section id="ecran-historique" class="ecran">
-      <h2>Historique</h2>
-      <p>Ici, tu retrouveras tes transcriptions enregistrées sur ce téléphone.</p>
+      <div id="vue-liste-historique">
+        <h2>Historique</h2>
+        <p>Tes transcriptions restent sur ce téléphone. Rien n'est envoyé ailleurs.</p>
+        <p id="info-espace" class="infos"></p>
+
+        <div class="ligne-boutons">
+          <button type="button" id="bouton-mode-selection" class="bouton-secondaire">Sélectionner</button>
+          <button type="button" id="bouton-exporter-historique" class="bouton-secondaire">Exporter tout (.txt)</button>
+        </div>
+        <button type="button" id="bouton-supprimer-selection" class="bouton-danger bouton-pleine-largeur" hidden disabled>Supprimer la sélection (0)</button>
+
+        <p id="message-historique" class="message" role="status" hidden></p>
+        <p id="historique-vide" class="infos" hidden>Aucune transcription pour l'instant. Elles apparaîtront ici après un enregistrement ou un import.</p>
+        <div id="liste-historique" class="liste-historique"></div>
+      </div>
+
+      <div id="vue-detail-historique" hidden>
+        <button type="button" id="bouton-retour-historique" class="bouton-lien">← Retour à l'historique</button>
+        <h2 id="titre-detail-historique" class="titre-detail"></h2>
+        <p id="sous-titre-detail-historique" class="sous-titre"></p>
+
+        <div id="zone-audio-historique" class="zone-reecoute" hidden>
+          <audio id="lecteur-historique" controls preload="metadata"></audio>
+        </div>
+
+        <div class="zone-transcription">
+          <div class="titre-zone">Transcription</div>
+          <p id="message-detail-historique" class="message" role="status" hidden></p>
+          <div id="texte-transcription-historique" class="texte-transcription"></div>
+          <div id="actions-transcription-historique" class="actions-transcription">
+            <button type="button" class="bouton-secondaire" data-action="copier">Copier</button>
+            <button type="button" class="bouton-secondaire" data-action="partager">Partager</button>
+            <button type="button" class="bouton-secondaire" data-action="telecharger">Télécharger .txt</button>
+          </div>
+          <button type="button" id="bouton-transcrire-historique" class="bouton-principal bouton-pleine-largeur" hidden>Transcrire</button>
+        </div>
+
+        <div class="groupe-boutons">
+          <button type="button" id="bouton-supprimer-audio-historique" class="bouton-secondaire" hidden>Supprimer l'audio (garder le texte)</button>
+          <button type="button" id="bouton-supprimer-entree-historique" class="bouton-danger">Supprimer</button>
+        </div>
+      </div>
     </section>
 
     <section id="ecran-reglages" class="ecran">
@@ -270,6 +348,16 @@
       </div>
 
       <p id="message-reglages" class="message" role="status"></p>
+
+      <label class="etiquette">Historique</label>
+      <label class="ligne-case" for="case-conserver-audio-imports">
+        <input type="checkbox" id="case-conserver-audio-imports">
+        <span>Conserver aussi l'audio des fichiers importés (prend de la place ; le fichier d'origine reste de toute façon sur ton téléphone).</span>
+      </label>
+      <div class="groupe-boutons">
+        <button type="button" id="bouton-tout-effacer-historique" class="bouton-danger">Effacer tout l'historique</button>
+      </div>
+      <p id="message-reglages-historique" class="message" role="status"></p>
     </section>
   </main>
 
@@ -290,6 +378,7 @@
       document.querySelectorAll('nav button').forEach(function (bouton) {
         bouton.classList.toggle('actif', bouton.dataset.ecran === nomEcran);
       });
+      if (nomEcran === 'historique') { fermerDetailHistorique(); afficherHistorique(); }
     }
 
     document.querySelectorAll('nav button').forEach(function (bouton) {
@@ -388,7 +477,8 @@
     var audioEnregistre = null;     // le dernier enregistrement terminé (Blob)
     var fluxMicro = null;           // le flux du micro, à couper à l'arrêt
     var debutEnregistrement = 0;
-    var infosEnregistrement = null; // date et durée du dernier enregistrement (pour l'en-tête du .txt)
+    var infosDernierEnregistrement = null; // date et durée du dernier enregistrement (pour l'en-tête du .txt)
+    var promesseEntreeEnregistrement = null; // numéro de son entrée dans l'historique
     var minuteurChrono = null;
     var enPreparation = false;      // vrai entre l'appui sur Démarrer et le vrai début
     var enFinalisation = false;     // vrai entre l'appui sur Arrêter et le vrai arrêt
@@ -501,7 +591,7 @@
       clearInterval(minuteurChrono);
       arreterTranscriptionDirecte();
       var dureeSecondes = (Date.now() - debutEnregistrement) / 1000;
-      infosEnregistrement = { date: new Date(), dureeSecondes: dureeSecondes, nomFichierAudio: '' };
+      infosDernierEnregistrement = { date: new Date(), dureeSecondes: dureeSecondes, nomFichierAudio: '' };
       if (fluxMicro) {
         fluxMicro.getTracks().forEach(function (piste) { piste.stop(); });
         fluxMicro = null;
@@ -529,6 +619,19 @@
         ' · Taille : ' + tailleMo + ' Mo · Format : ' + type.split(';')[0];
       zoneReecoute.hidden = false;
       afficherMessageEnregistrement('Enregistrement terminé. Tu peux le réécouter.', 'succes');
+
+      // Sauvegarde tout de suite (avec l'audio) : rien n'est perdu si la transcription échoue.
+      promesseEntreeEnregistrement = ajouterAuHistorique({
+        date: infosDernierEnregistrement.date.getTime(),
+        source: 'enregistrement',
+        nomFichierAudio: '',
+        dureeSecondes: dureeSecondes,
+        texte: '',
+        statut: 'a-transcrire'
+      }, audioEnregistre).catch(function () {
+        afficherMessageEnregistrement('Enregistrement terminé, mais impossible de le garder dans l\'historique (espace plein ?).', 'erreur');
+        return null;
+      });
       transcrireEnregistrement();
     }
 
@@ -657,6 +760,11 @@
         }
         afficherMessageTranscription('', '');
         texteTranscription.textContent = texte;
+        if (promesseEntreeEnregistrement) {
+          promesseEntreeEnregistrement.then(function (id) {
+            if (id) return mettreAJourEntree(id, { texte: texte, statut: 'transcrit' });
+          }).catch(function () {});
+        }
       }).catch(function (erreur) {
         transcriptionEnCours = false;
         afficherMessageTranscription(erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
@@ -878,6 +986,7 @@
     var fichierImporte = null;      // le fichier choisi (File)
     var infosImport = null;         // date, durée et nom du fichier (pour l'en-tête du .txt)
     var nomFichierImportePourGroq = '';
+    var entreeImport = null;        // { fichier, promesse } : évite un doublon si on relance le même fichier
     var transcriptionImportEnCours = false;
 
     var champFichierImport = document.getElementById('champ-fichier-import');
@@ -938,7 +1047,7 @@
       boutonTranscrireImport.disabled = false;
 
       if (fichier.size > TAILLE_MAX_FICHIER_GROQ) {
-        afficherMessageDans(messageImport, 'Ce fichier fait plus de 25 Mo : il faudra le découpage en morceaux (étape 8).', 'erreur');
+        afficherMessageDans(messageImport, 'Ce fichier fait plus de 25 Mo : il sera découpé en morceaux automatiquement.', '');
       }
     });
 
@@ -981,6 +1090,7 @@
         }
         afficherMessageDans(messageTranscriptionImport, '', '');
         texteTranscriptionImport.textContent = texte;
+        enregistrerImportDansHistorique(texte);
       }).catch(function (erreur) {
         transcriptionImportEnCours = false;
         boutonTranscrireImport.disabled = false;
@@ -988,6 +1098,29 @@
         boutonRelancerTranscriptionImport.textContent = erreur.repriseePossible ? 'Reprendre la transcription' : 'Relancer la transcription';
         boutonRelancerTranscriptionImport.hidden = false;
       });
+    }
+
+    // Ajoute l'import à l'historique (l'audio seulement si le réglage est coché).
+    function enregistrerImportDansHistorique(texte) {
+      var fichier = fichierImporte;
+      if (entreeImport && entreeImport.fichier === fichier) {
+        entreeImport.promesse.then(function (id) {
+          if (id) return mettreAJourEntree(id, { texte: texte, statut: 'transcrit' });
+        }).catch(function () {});
+        return;
+      }
+      var promesse = ajouterAuHistorique({
+        date: infosImport.date.getTime(),
+        source: 'import',
+        nomFichierAudio: infosImport.nomFichierAudio,
+        dureeSecondes: infosImport.dureeSecondes,
+        texte: texte,
+        statut: 'transcrit'
+      }, lireConserverAudioImports() ? fichier : null).catch(function () {
+        afficherMessageDans(messageTranscriptionImport, 'Impossible de garder cette transcription dans l\'historique (espace plein ?).', 'erreur');
+        return null;
+      });
+      entreeImport = { fichier: fichier, promesse: promesse };
     }
 
     boutonTranscrireImport.addEventListener('click', transcrireFichierImporte);
@@ -1083,9 +1216,10 @@
       return navigator.share(donnees).catch(function () {}); // annulation par l'utilisateur : rien à faire
     }
 
-    function telechargerTexte(texte, nomFichier, source) {
-      // Le caractère ﻿ au début aide les vieux logiciels Windows à reconnaître l'UTF-8 (accents).
-      var blob = new Blob(['﻿' + contenuFichierTxt(texte, source)], { type: 'text/plain;charset=utf-8' });
+    // Télécharge un contenu texte sous forme de fichier .txt.
+    function telechargerContenu(contenu, nomFichier) {
+      // Le caractère \uFEFF au début aide les vieux logiciels Windows à reconnaître l'UTF-8 (accents).
+      var blob = new Blob(['\uFEFF' + contenu], { type: 'text/plain;charset=utf-8' });
       var lien = document.createElement('a');
       lien.href = URL.createObjectURL(blob);
       lien.download = nomFichier;
@@ -1093,6 +1227,10 @@
       lien.click();
       document.body.removeChild(lien);
       setTimeout(function () { URL.revokeObjectURL(lien.href); }, 10000);
+    }
+
+    function telechargerTexte(texte, nomFichier, source) {
+      telechargerContenu(contenuFichierTxt(texte, source), nomFichier);
     }
 
     // Relie une barre de boutons à la zone de texte et aux informations de sa transcription.
@@ -1113,8 +1251,539 @@
       });
     }
 
-    brancherActionsTranscription('actions-transcription', texteTranscription, function () { return infosEnregistrement; });
+    brancherActionsTranscription('actions-transcription', texteTranscription, function () { return infosDernierEnregistrement; });
     brancherActionsTranscription('actions-transcription-import', texteTranscriptionImport, function () { return infosImport; });
+
+    brancherActionsTranscription('actions-transcription-historique', document.getElementById('texte-transcription-historique'),
+      function () { return entreeDetail ? sourceDepuisEntree(entreeDetail) : null; });
+
+    // ---------- Historique (stockage IndexedDB sur le téléphone) ----------
+    // Deux « magasins » dans la base : les textes (petits, listés souvent) et les audios (gros, lus à la demande).
+    var NOM_BASE_HISTORIQUE = 'transcripteur';
+    var VERSION_BASE_HISTORIQUE = 1;
+    var MAGASIN_TRANSCRIPTIONS = 'transcriptions'; // { id, date, source, nomFichierAudio, dureeSecondes, texte, statut, aAudio, typeAudio, tailleAudio }
+    var MAGASIN_AUDIOS = 'audios';                 // { id, audio: Blob }
+    var NOM_STOCKAGE_CONSERVER_AUDIO_IMPORTS = 'transcripteur_conserver_audio_imports';
+    var DELAI_CONFIRMATION = 4000;                 // ms pour confirmer une suppression (deuxième appui)
+
+    var promesseBaseHistorique = null;
+    var modeSelection = false;
+    var entreeDetail = null;      // l'entrée ouverte dans le détail
+    var audioDetail = null;       // son audio (Blob), gardé en mémoire pour pouvoir reprendre une transcription
+    var transcriptionHistoriqueEnCours = false;
+
+    var vueListeHistorique = document.getElementById('vue-liste-historique');
+    var vueDetailHistorique = document.getElementById('vue-detail-historique');
+    var listeHistorique = document.getElementById('liste-historique');
+    var historiqueVide = document.getElementById('historique-vide');
+    var infoEspace = document.getElementById('info-espace');
+    var messageHistorique = document.getElementById('message-historique');
+    var boutonModeSelection = document.getElementById('bouton-mode-selection');
+    var boutonSupprimerSelection = document.getElementById('bouton-supprimer-selection');
+    var titreDetail = document.getElementById('titre-detail-historique');
+    var sousTitreDetail = document.getElementById('sous-titre-detail-historique');
+    var zoneAudioHistorique = document.getElementById('zone-audio-historique');
+    var lecteurHistorique = document.getElementById('lecteur-historique');
+    var messageDetail = document.getElementById('message-detail-historique');
+    var texteDetail = document.getElementById('texte-transcription-historique');
+    var boutonTranscrireHistorique = document.getElementById('bouton-transcrire-historique');
+    var boutonSupprimerAudioHistorique = document.getElementById('bouton-supprimer-audio-historique');
+    var boutonSupprimerEntreeHistorique = document.getElementById('bouton-supprimer-entree-historique');
+    var caseConserverAudioImports = document.getElementById('case-conserver-audio-imports');
+    var messageReglagesHistorique = document.getElementById('message-reglages-historique');
+
+    function ouvrirBaseHistorique() {
+      if (promesseBaseHistorique) return promesseBaseHistorique;
+      promesseBaseHistorique = new Promise(function (resoudre, rejeter) {
+        if (!window.indexedDB) { rejeter(new Error('Stockage indisponible sur ce navigateur.')); return; }
+        var demande = indexedDB.open(NOM_BASE_HISTORIQUE, VERSION_BASE_HISTORIQUE);
+        demande.onupgradeneeded = function () {
+          var base = demande.result;
+          if (!base.objectStoreNames.contains(MAGASIN_TRANSCRIPTIONS)) {
+            base.createObjectStore(MAGASIN_TRANSCRIPTIONS, { keyPath: 'id', autoIncrement: true });
+          }
+          if (!base.objectStoreNames.contains(MAGASIN_AUDIOS)) {
+            base.createObjectStore(MAGASIN_AUDIOS, { keyPath: 'id' });
+          }
+        };
+        demande.onsuccess = function () { resoudre(demande.result); };
+        demande.onerror = function () { rejeter(demande.error); };
+      });
+      promesseBaseHistorique.catch(function () { promesseBaseHistorique = null; });
+      return promesseBaseHistorique;
+    }
+
+    // Lance un travail dans une transaction. travail(magasins, definirResultat) ;
+    // la promesse se résout quand tout est bien écrit sur le téléphone.
+    function transactionHistorique(nomsMagasins, mode, travail) {
+      return ouvrirBaseHistorique().then(function (base) {
+        return new Promise(function (resoudre, rejeter) {
+          var transaction = base.transaction(nomsMagasins, mode);
+          var resultat;
+          transaction.oncomplete = function () { resoudre(resultat); };
+          transaction.onerror = function () { rejeter(transaction.error); };
+          transaction.onabort = function () { rejeter(transaction.error || new Error('Opération annulée.')); };
+          var magasins = {};
+          nomsMagasins.forEach(function (nom) { magasins[nom] = transaction.objectStore(nom); });
+          travail(magasins, function (valeur) { resultat = valeur; });
+        });
+      });
+    }
+
+    function ecrireEntreeEtAudio(entree, audio) {
+      entree.aAudio = !!audio;
+      entree.typeAudio = audio ? (audio.type || '') : '';
+      entree.tailleAudio = audio ? audio.size : 0;
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS, MAGASIN_AUDIOS], 'readwrite', function (m, definirResultat) {
+        var demande = m[MAGASIN_TRANSCRIPTIONS].add(entree);
+        demande.onsuccess = function () {
+          definirResultat(demande.result);
+          if (audio) m[MAGASIN_AUDIOS].put({ id: demande.result, audio: audio });
+        };
+      });
+    }
+
+    // Ajoute une entrée (et éventuellement son audio). Renvoie son numéro.
+    // Si l'audio ne rentre pas (espace plein), on garde au moins l'entrée sans l'audio.
+    function ajouterAuHistorique(entree, audio) {
+      demanderStockagePersistant();
+      return ecrireEntreeEtAudio(Object.assign({}, entree), audio).catch(function (erreur) {
+        if (!audio) throw erreur;
+        return ecrireEntreeEtAudio(Object.assign({}, entree), null);
+      }).then(function (id) {
+        rafraichirHistoriqueSiVisible(id);
+        return id;
+      });
+    }
+
+    function mettreAJourEntree(id, champs) {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS], 'readwrite', function (m) {
+        var demande = m[MAGASIN_TRANSCRIPTIONS].get(id);
+        demande.onsuccess = function () {
+          if (!demande.result) return;
+          m[MAGASIN_TRANSCRIPTIONS].put(Object.assign(demande.result, champs));
+        };
+      }).then(function () { rafraichirHistoriqueSiVisible(id); });
+    }
+
+    // Toutes les entrées, de la plus récente à la plus ancienne.
+    function lireHistorique() {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS], 'readonly', function (m, definirResultat) {
+        var demande = m[MAGASIN_TRANSCRIPTIONS].getAll();
+        demande.onsuccess = function () { definirResultat(demande.result || []); };
+      }).then(function (entrees) {
+        return entrees.sort(function (a, b) { return b.date - a.date; });
+      });
+    }
+
+    function lireEntree(id) {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS], 'readonly', function (m, definirResultat) {
+        var demande = m[MAGASIN_TRANSCRIPTIONS].get(id);
+        demande.onsuccess = function () { definirResultat(demande.result || null); };
+      });
+    }
+
+    function lireAudioHistorique(id) {
+      return transactionHistorique([MAGASIN_AUDIOS], 'readonly', function (m, definirResultat) {
+        var demande = m[MAGASIN_AUDIOS].get(id);
+        demande.onsuccess = function () { definirResultat(demande.result ? demande.result.audio : null); };
+      });
+    }
+
+    function supprimerEntrees(ids) {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS, MAGASIN_AUDIOS], 'readwrite', function (m) {
+        ids.forEach(function (id) {
+          m[MAGASIN_TRANSCRIPTIONS].delete(id);
+          m[MAGASIN_AUDIOS].delete(id);
+        });
+      });
+    }
+
+    // Supprime l'audio d'une entrée mais garde son texte.
+    function supprimerAudio(id) {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS, MAGASIN_AUDIOS], 'readwrite', function (m) {
+        m[MAGASIN_AUDIOS].delete(id);
+        var demande = m[MAGASIN_TRANSCRIPTIONS].get(id);
+        demande.onsuccess = function () {
+          if (!demande.result) return;
+          m[MAGASIN_TRANSCRIPTIONS].put(Object.assign(demande.result, { aAudio: false, typeAudio: '', tailleAudio: 0 }));
+        };
+      });
+    }
+
+    function toutEffacerHistorique() {
+      return transactionHistorique([MAGASIN_TRANSCRIPTIONS, MAGASIN_AUDIOS], 'readwrite', function (m) {
+        m[MAGASIN_TRANSCRIPTIONS].clear();
+        m[MAGASIN_AUDIOS].clear();
+      });
+    }
+
+    // Demande au navigateur de ne pas effacer nos données quand le téléphone manque de place.
+    function demanderStockagePersistant() {
+      if (!navigator.storage || !navigator.storage.persist) return Promise.resolve(false);
+      return navigator.storage.persisted().then(function (deja) {
+        return deja || navigator.storage.persist();
+      }).catch(function () { return false; });
+    }
+
+    function formaterOctets(octets) {
+      if (!octets) return '0 Mo';
+      if (octets >= 1024 * 1024 * 1024) return (octets / (1024 * 1024 * 1024)).toFixed(1).replace('.', ',') + ' Go';
+      if (octets >= 1024 * 1024) return (octets / (1024 * 1024)).toFixed(1).replace('.', ',') + ' Mo';
+      return Math.max(1, Math.round(octets / 1024)) + ' Ko';
+    }
+
+    function estimerEspace() {
+      if (!navigator.storage || !navigator.storage.estimate) { infoEspace.textContent = ''; return; }
+      Promise.all([
+        navigator.storage.estimate(),
+        navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false)
+      ]).then(function (resultats) {
+        var estimation = resultats[0];
+        infoEspace.textContent = 'Espace utilisé : ' + formaterOctets(estimation.usage) +
+          ' sur ' + formaterOctets(estimation.quota) + ' disponibles · Stockage protégé : ' + (resultats[1] ? 'oui' : 'non');
+      }).catch(function () { infoEspace.textContent = ''; });
+    }
+
+    function formaterDateHeure(date) {
+      var d = new Date(date);
+      return deuxChiffres(d.getDate()) + '/' + deuxChiffres(d.getMonth() + 1) + '/' + d.getFullYear() +
+        ' à ' + deuxChiffres(d.getHours()) + ':' + deuxChiffres(d.getMinutes());
+    }
+
+    // Les informations dont ont besoin l'en-tête et le nom du fichier .txt.
+    function sourceDepuisEntree(entree) {
+      return { date: new Date(entree.date), dureeSecondes: entree.dureeSecondes, nomFichierAudio: entree.nomFichierAudio || '' };
+    }
+
+    function titreEntree(entree) {
+      return entree.source === 'import' ? (entree.nomFichierAudio || 'Fichier importé') : 'Enregistrement du ' + formaterDateHeure(entree.date);
+    }
+
+    function lireConserverAudioImports() {
+      try { return localStorage.getItem(NOM_STOCKAGE_CONSERVER_AUDIO_IMPORTS) === 'oui'; }
+      catch (erreur) { return false; }
+    }
+
+    // Bouton à deux appuis : le premier demande confirmation, le second (dans les 4 s) agit.
+    function demanderConfirmation(bouton, texteConfirmation, action) {
+      if (bouton.classList.contains('confirmation')) {
+        clearTimeout(bouton.minuteurConfirmation);
+        bouton.classList.remove('confirmation');
+        bouton.textContent = bouton.dataset.texteOrigine;
+        action();
+        return;
+      }
+      bouton.dataset.texteOrigine = bouton.textContent;
+      bouton.textContent = texteConfirmation;
+      bouton.classList.add('confirmation');
+      bouton.minuteurConfirmation = setTimeout(function () {
+        bouton.classList.remove('confirmation');
+        bouton.textContent = bouton.dataset.texteOrigine;
+      }, DELAI_CONFIRMATION);
+    }
+
+    function annulerConfirmation(bouton) {
+      if (!bouton.classList.contains('confirmation')) return;
+      clearTimeout(bouton.minuteurConfirmation);
+      bouton.classList.remove('confirmation');
+      bouton.textContent = bouton.dataset.texteOrigine;
+    }
+
+    function creerCarteHistorique(entree) {
+      var carte = document.createElement('div');
+      carte.className = 'carte-historique';
+      carte.dataset.id = entree.id;
+
+      var caseCocher = document.createElement('input');
+      caseCocher.type = 'checkbox';
+      caseCocher.setAttribute('aria-label', 'Sélectionner');
+      carte.appendChild(caseCocher);
+
+      var contenu = document.createElement('div');
+      contenu.className = 'contenu-carte';
+      var entete = document.createElement('div');
+      entete.className = 'entete-carte';
+      var morceaux = [(entree.source === 'import' ? '📂 ' : '🎙️ ') + formaterDateHeure(entree.date)];
+      if (entree.dureeSecondes) morceaux.push(formaterDureeComplete(entree.dureeSecondes));
+      if (entree.aAudio) morceaux.push('🔊');
+      morceaux.forEach(function (texte) {
+        var span = document.createElement('span');
+        span.textContent = texte;
+        entete.appendChild(span);
+      });
+      if (entree.statut !== 'transcrit') {
+        var etiquette = document.createElement('span');
+        etiquette.className = 'etiquette-statut';
+        etiquette.textContent = 'à transcrire';
+        entete.appendChild(etiquette);
+      }
+      contenu.appendChild(entete);
+
+      var extrait = document.createElement('div');
+      extrait.className = 'extrait-carte';
+      var debutTexte = (entree.texte || '').slice(0, 300);
+      extrait.textContent = entree.source === 'import'
+        ? entree.nomFichierAudio + (debutTexte ? ' — ' + debutTexte : '')
+        : (debutTexte || 'Pas encore de texte.');
+      contenu.appendChild(extrait);
+      carte.appendChild(contenu);
+      return carte;
+    }
+
+    function afficherHistorique() {
+      estimerEspace();
+      return lireHistorique().then(function (entrees) {
+        listeHistorique.textContent = '';
+        entrees.forEach(function (entree) { listeHistorique.appendChild(creerCarteHistorique(entree)); });
+        historiqueVide.hidden = entrees.length > 0;
+        boutonExporterHistorique.disabled = entrees.length === 0;
+        boutonModeSelection.disabled = entrees.length === 0;
+        if (!entrees.length && modeSelection) changerModeSelection(false);
+        mettreAJourBoutonSuppressionSelection();
+      }).catch(function () {
+        afficherMessageDans(messageHistorique, 'Impossible de lire l\'historique sur ce navigateur (navigation privée ?).', 'erreur');
+      });
+    }
+
+    function rafraichirHistoriqueSiVisible(id) {
+      if (!document.getElementById('ecran-historique').classList.contains('actif')) return;
+      if (!vueDetailHistorique.hidden) {
+        if (entreeDetail && entreeDetail.id === id && !transcriptionHistoriqueEnCours) ouvrirDetailHistorique(id);
+        return;
+      }
+      afficherHistorique();
+    }
+
+    function idsSelectionnes() {
+      var ids = [];
+      listeHistorique.querySelectorAll('.carte-historique').forEach(function (carte) {
+        if (carte.querySelector('input').checked) ids.push(Number(carte.dataset.id));
+      });
+      return ids;
+    }
+
+    function mettreAJourBoutonSuppressionSelection() {
+      var nombre = idsSelectionnes().length;
+      annulerConfirmation(boutonSupprimerSelection);
+      boutonSupprimerSelection.textContent = 'Supprimer la sélection (' + nombre + ')';
+      boutonSupprimerSelection.disabled = nombre === 0;
+      boutonSupprimerSelection.hidden = !modeSelection;
+    }
+
+    function changerModeSelection(actif) {
+      modeSelection = actif;
+      listeHistorique.classList.toggle('mode-selection', actif);
+      boutonModeSelection.textContent = actif ? 'Annuler' : 'Sélectionner';
+      if (!actif) {
+        listeHistorique.querySelectorAll('.carte-historique').forEach(function (carte) {
+          carte.querySelector('input').checked = false;
+          carte.classList.remove('selectionnee');
+        });
+      }
+      mettreAJourBoutonSuppressionSelection();
+    }
+
+    listeHistorique.addEventListener('click', function (evenement) {
+      var carte = evenement.target.closest('.carte-historique');
+      if (!carte) return;
+      var caseCocher = carte.querySelector('input');
+      if (modeSelection) {
+        if (evenement.target !== caseCocher) caseCocher.checked = !caseCocher.checked;
+        carte.classList.toggle('selectionnee', caseCocher.checked);
+        mettreAJourBoutonSuppressionSelection();
+        return;
+      }
+      ouvrirDetailHistorique(Number(carte.dataset.id));
+    });
+
+    boutonModeSelection.addEventListener('click', function () { changerModeSelection(!modeSelection); });
+
+    boutonSupprimerSelection.addEventListener('click', function () {
+      var ids = idsSelectionnes();
+      if (!ids.length) return;
+      demanderConfirmation(boutonSupprimerSelection, 'Confirmer : supprimer ' + ids.length + ' ?', function () {
+        supprimerEntrees(ids).then(function () {
+          changerModeSelection(false);
+          afficherMessageDans(messageHistorique, ids.length + (ids.length > 1 ? ' entrées supprimées.' : ' entrée supprimée.'), 'succes');
+          afficherHistorique();
+        }).catch(function () {
+          afficherMessageDans(messageHistorique, 'La suppression a échoué.', 'erreur');
+        });
+      });
+    });
+
+    // ---------- Détail d'une entrée ----------
+    function ouvrirDetailHistorique(id) {
+      return lireEntree(id).then(function (entree) {
+        if (!entree) { fermerDetailHistorique(); afficherHistorique(); return; }
+        var memeEntree = entreeDetail && entreeDetail.id === entree.id;
+        entreeDetail = entree;
+        vueListeHistorique.hidden = true;
+        vueDetailHistorique.hidden = false;
+        afficherMessageDans(messageHistorique, '', '');
+        titreDetail.textContent = titreEntree(entree);
+        var infos = [entree.source === 'import' ? 'Import du ' + formaterDateHeure(entree.date) : 'Enregistrement au micro'];
+        infos.push('Durée : ' + formaterDureeComplete(entree.dureeSecondes));
+        if (entree.aAudio) infos.push('Audio : ' + formaterOctets(entree.tailleAudio));
+        sousTitreDetail.textContent = infos.join(' · ');
+        texteDetail.textContent = entree.texte || '';
+        if (!memeEntree) afficherMessageDans(messageDetail, '', '');
+        if (!entree.texte && !messageDetail.textContent) {
+          afficherMessageDans(messageDetail, entree.aAudio ? 'Pas encore transcrit.' : 'Pas de texte, et l\'audio n\'a pas été gardé.', '');
+        }
+        boutonTranscrireHistorique.hidden = !(entree.aAudio && !entree.texte);
+        boutonSupprimerAudioHistorique.hidden = !entree.aAudio;
+        annulerConfirmation(boutonSupprimerAudioHistorique);
+        annulerConfirmation(boutonSupprimerEntreeHistorique);
+        boutonSupprimerAudioHistorique.disabled = !entree.texte; // sans texte, l'audio est tout ce qui reste
+        window.scrollTo(0, 0);
+
+        if (!entree.aAudio) {
+          viderLecteurHistorique();
+          return;
+        }
+        if (memeEntree && audioDetail) return;
+        return lireAudioHistorique(entree.id).then(function (audio) {
+          if (!entreeDetail || entreeDetail.id !== entree.id) return;
+          viderLecteurHistorique();
+          audioDetail = audio;
+          if (!audio) return;
+          lecteurHistorique.src = URL.createObjectURL(audio);
+          corrigerDureeLecteur(lecteurHistorique);
+          zoneAudioHistorique.hidden = false;
+        });
+      }).catch(function () {
+        afficherMessageDans(messageHistorique, 'Impossible d\'ouvrir cette entrée.', 'erreur');
+      });
+    }
+
+    function viderLecteurHistorique() {
+      lecteurHistorique.pause();
+      if (lecteurHistorique.src) URL.revokeObjectURL(lecteurHistorique.src);
+      lecteurHistorique.removeAttribute('src');
+      lecteurHistorique.load();
+      zoneAudioHistorique.hidden = true;
+      audioDetail = null;
+    }
+
+    function fermerDetailHistorique() {
+      if (transcriptionHistoriqueEnCours) return; // on reste sur le détail pendant la transcription
+      entreeDetail = null;
+      viderLecteurHistorique();
+      vueDetailHistorique.hidden = true;
+      vueListeHistorique.hidden = false;
+    }
+
+    document.getElementById('bouton-retour-historique').addEventListener('click', function () {
+      if (transcriptionHistoriqueEnCours) {
+        afficherMessageDans(messageDetail, 'Transcription en cours : patiente jusqu\'à la fin.', '');
+        return;
+      }
+      fermerDetailHistorique();
+      afficherHistorique();
+    });
+
+    // Transcrit une entrée gardée sans texte (par exemple un enregistrement fait sans connexion).
+    function transcrireDepuisHistorique() {
+      if (!entreeDetail || !audioDetail || transcriptionHistoriqueEnCours) return;
+      var entree = entreeDetail;
+      var audio = audioDetail;
+      transcriptionHistoriqueEnCours = true;
+      boutonTranscrireHistorique.disabled = true;
+      afficherMessageDans(messageDetail, 'Transcription en cours…', '');
+      var nomFichier = entree.source === 'import'
+        ? (nomFichierPourGroq({ name: entree.nomFichierAudio || 'fichier', type: audio.type || '' }) || 'fichier.' + extensionPourFormat(audio.type || ''))
+        : 'enregistrement.' + extensionPourFormat(audio.type || '');
+      transcrireAudio(audio, nomFichier, function (message, textePartiel) {
+        afficherMessageDans(messageDetail, message, '');
+        texteDetail.textContent = textePartiel;
+      }).then(function (texte) {
+        transcriptionHistoriqueEnCours = false;
+        boutonTranscrireHistorique.disabled = false;
+        boutonTranscrireHistorique.textContent = 'Transcrire';
+        if (!texte) {
+          texteDetail.textContent = '';
+          afficherMessageDans(messageDetail, 'Aucune parole détectée.', 'erreur');
+          return;
+        }
+        afficherMessageDans(messageDetail, '', '');
+        texteDetail.textContent = texte;
+        return mettreAJourEntree(entree.id, { texte: texte, statut: 'transcrit' });
+      }).catch(function (erreur) {
+        transcriptionHistoriqueEnCours = false;
+        boutonTranscrireHistorique.disabled = false;
+        boutonTranscrireHistorique.textContent = erreur.repriseePossible ? 'Reprendre la transcription' : 'Transcrire';
+        afficherMessageDans(messageDetail, erreur.messageUtilisateur || ('Erreur inattendue : ' + erreur.message), 'erreur');
+      });
+    }
+
+    boutonTranscrireHistorique.addEventListener('click', transcrireDepuisHistorique);
+
+    boutonSupprimerAudioHistorique.addEventListener('click', function () {
+      if (!entreeDetail || transcriptionHistoriqueEnCours) return;
+      var id = entreeDetail.id;
+      demanderConfirmation(boutonSupprimerAudioHistorique, 'Confirmer : supprimer l\'audio ?', function () {
+        supprimerAudio(id).then(function () {
+          afficherMessageDans(messageDetail, 'Audio supprimé. Le texte est gardé.', 'succes');
+          audioDetail = null;
+          return ouvrirDetailHistorique(id);
+        }).catch(function () {
+          afficherMessageDans(messageDetail, 'La suppression a échoué.', 'erreur');
+        });
+      });
+    });
+
+    boutonSupprimerEntreeHistorique.addEventListener('click', function () {
+      if (!entreeDetail || transcriptionHistoriqueEnCours) return;
+      var id = entreeDetail.id;
+      demanderConfirmation(boutonSupprimerEntreeHistorique, 'Confirmer : supprimer ?', function () {
+        supprimerEntrees([id]).then(function () {
+          fermerDetailHistorique();
+          afficherMessageDans(messageHistorique, 'Entrée supprimée.', 'succes');
+          afficherHistorique();
+        }).catch(function () {
+          afficherMessageDans(messageDetail, 'La suppression a échoué.', 'erreur');
+        });
+      });
+    });
+
+    // ---------- Export de tout l'historique ----------
+    var boutonExporterHistorique = document.getElementById('bouton-exporter-historique');
+
+    function exporterHistorique() {
+      lireHistorique().then(function (entrees) {
+        if (!entrees.length) return;
+        var blocs = entrees.map(function (entree) {
+          return enTeteTranscription(sourceDepuisEntree(entree)) + '\r\n\r\n' + (entree.texte || '(pas encore transcrit)');
+        });
+        var d = new Date();
+        var nomFichier = 'historique-transcriptions-' + d.getFullYear() + '-' + deuxChiffres(d.getMonth() + 1) + '-' + deuxChiffres(d.getDate()) + '.txt';
+        telechargerContenu(blocs.join('\r\n\r\n=====\r\n\r\n') + '\r\n', nomFichier);
+      }).catch(function () {
+        afficherMessageDans(messageHistorique, 'L\'export a échoué.', 'erreur');
+      });
+    }
+
+    boutonExporterHistorique.addEventListener('click', exporterHistorique);
+
+    // ---------- Réglages de l'historique ----------
+    caseConserverAudioImports.checked = lireConserverAudioImports();
+    caseConserverAudioImports.addEventListener('change', function () {
+      try { localStorage.setItem(NOM_STOCKAGE_CONSERVER_AUDIO_IMPORTS, caseConserverAudioImports.checked ? 'oui' : 'non'); }
+      catch (erreur) {}
+    });
+
+    document.getElementById('bouton-tout-effacer-historique').addEventListener('click', function () {
+      var bouton = this;
+      demanderConfirmation(bouton, 'Confirmer : tout effacer ?', function () {
+        toutEffacerHistorique().then(function () {
+          afficherMessageDans(messageReglagesHistorique, 'Historique effacé.', 'succes');
+        }).catch(function () {
+          afficherMessageDans(messageReglagesHistorique, 'L\'effacement a échoué.', 'erreur');
+        });
+      });
+    });
 
     boutonRelancerTranscriptionImport.addEventListener('click', transcrireFichierImporte);
 
