@@ -270,10 +270,10 @@
 
     <section id="ecran-importer" class="ecran">
       <h2>Importer</h2>
-      <p>Choisis un fichier audio sur ton téléphone (mp3, m4a, wav, ogg, opus, webm, flac, mp4), puis lance la transcription.</p>
+      <p>Choisis un fichier audio ou une vidéo sur ton téléphone (mp3, m4a, wav, ogg, opus, flac, mp4, mov, webm…), puis lance la transcription. Pour une vidéo, seul le son est envoyé.</p>
 
-      <label for="champ-fichier-import" class="bouton-principal bouton-fichier">Choisir un fichier audio</label>
-      <input id="champ-fichier-import" type="file" accept="audio/*,video/mp4,.mp3,.m4a,.mp4,.wav,.ogg,.opus,.webm,.flac,.mpeg,.mpga" hidden>
+      <label for="champ-fichier-import" class="bouton-principal bouton-fichier">Choisir un fichier audio ou une vidéo</label>
+      <input id="champ-fichier-import" type="file" accept="audio/*,video/*,.mp3,.m4a,.mp4,.mov,.m4v,.3gp,.wav,.ogg,.opus,.webm,.flac,.mpeg,.mpga" hidden>
 
       <p id="message-import" class="message" role="status"></p>
 
@@ -791,13 +791,14 @@
     boutonRelancerTranscription.addEventListener('click', transcrireEnregistrement);
 
     // Point d'entrée unique pour transcrire un son, qu'il vienne du micro ou d'un fichier importé.
-    // Moins de 25 Mo : envoi direct. Au-delà : découpage en morceaux (voir plus bas).
+    // Son de moins de 25 Mo : envoi direct. Vidéo (quelle que soit sa taille) ou son de plus de 25 Mo :
+    // découpage en morceaux (voir plus bas) ; pour une vidéo, seul le son est extrait et envoyé.
     // suivi(message, textePartiel) est appelée pour afficher la progression.
     function transcrireAudio(fichierAudio, nomFichier, suivi) {
-      if (fichierAudio.size <= TAILLE_MAX_FICHIER_GROQ) {
+      if (fichierAudio.size <= TAILLE_MAX_FICHIER_GROQ && !estVideo(fichierAudio)) {
         return transcrireAvecWhisper(fichierAudio, nomFichier);
       }
-      return transcrireParMorceaux(fichierAudio, suivi || function () {});
+      return transcrireParMorceaux(fichierAudio, nomFichier, suivi || function () {});
     }
 
     // ---------- Découpage des longs fichiers ----------
@@ -935,30 +936,71 @@
       return travailDecoupe.textes.filter(function (t) { return t; }).join(' ');
     }
 
+    var derniereDureeDecoupe = null; // durée lue pendant le dernier découpage (utile si le lecteur ne la connaît pas)
+
+    // Méthode classique : décode tout le son en mémoire (formats autres que MP4 / MOV / M4A).
+    function preparerDecoupeDecodage(fichier, suivi) {
+      suivi('Préparation : décodage du fichier (peut prendre une minute)…', '');
+      return decoderEnMono16k(fichier).then(function (echantillons) {
+        var morceaux = decouperAudio(echantillons);
+        return {
+          fichier: fichier,
+          morceaux: morceaux,
+          dureeTotale: echantillons.length / FREQUENCE_DECOUPAGE,
+          textes: [],
+          fabriquerMorceau: function (index) {
+            var morceau = morceaux[index];
+            return Promise.resolve({
+              audio: encoderWav(echantillons.subarray(morceau.debut, morceau.fin), FREQUENCE_DECOUPAGE),
+              nom: 'morceau-' + (index + 1) + '.wav'
+            });
+          }
+        };
+      });
+    }
+
+    // Petit fichier (vidéo courte) que la lecture MP4 ne sait pas traiter : envoyé tel quel.
+    function preparerEnvoiEntier(fichier, nomFichier) {
+      return Promise.resolve({
+        fichier: fichier,
+        morceaux: [{}],
+        dureeTotale: null,
+        textes: [],
+        fabriquerMorceau: function () { return Promise.resolve({ audio: fichier, nom: nomFichier }); }
+      });
+    }
+
+    // Choisit la méthode : lecture MP4 par tranches si possible, sinon méthode classique.
+    function preparerDecoupe(fichier, nomFichier, suivi) {
+      var methodeDeSecours = function () {
+        return fichier.size <= TAILLE_MAX_FICHIER_GROQ ? preparerEnvoiEntier(fichier, nomFichier) : preparerDecoupeDecodage(fichier, suivi);
+      };
+      if (!estConteneurMp4(fichier)) return methodeDeSecours();
+      return preparerDecoupeMp4(fichier, suivi).catch(function (erreur) {
+        if (!erreur.formatNonGere) throw erreur;
+        return methodeDeSecours();
+      });
+    }
+
     // Transcrit un long fichier morceau par morceau, un seul à la fois.
     // Si le même fichier a déjà été commencé, reprend au premier morceau non transcrit.
-    function transcrireParMorceaux(fichierAudio, suivi) {
+    function transcrireParMorceaux(fichierAudio, nomFichier, suivi) {
       var preparation;
       if (travailDecoupe && travailDecoupe.fichier === fichierAudio) {
         preparation = Promise.resolve();
       } else {
         travailDecoupe = null;
-        suivi('Préparation : décodage du fichier (peut prendre une minute)…', '');
-        preparation = decoderEnMono16k(fichierAudio).then(function (echantillons) {
-          travailDecoupe = {
-            fichier: fichierAudio,
-            echantillons: echantillons,
-            morceaux: decouperAudio(echantillons),
-            textes: []
-          };
+        preparation = preparerDecoupe(fichierAudio, nomFichier, suivi).then(function (travail) {
+          travailDecoupe = travail;
         });
       }
 
       return preparation.then(function () {
         var morceaux = travailDecoupe.morceaux;
-        var dureeTotale = travailDecoupe.echantillons.length / FREQUENCE_DECOUPAGE;
-        var estimation = formaterDureeLongue(dureeTotale) + ', ' + morceaux.length + ' morceaux, environ ' +
-          formaterDureeLongue(dureeTotale) + ' de quota Groq';
+        var dureeTotale = travailDecoupe.dureeTotale;
+        derniereDureeDecoupe = dureeTotale;
+        var estimation = dureeTotale === null ? 'Envoi' : formaterDureeLongue(dureeTotale) + ', ' + morceaux.length +
+          (morceaux.length > 1 ? ' morceaux' : ' morceau') + ', environ ' + formaterDureeLongue(dureeTotale) + ' de quota Groq';
 
         function traiterMorceau(index) {
           if (index >= morceaux.length) {
@@ -969,11 +1011,11 @@
           if (travailDecoupe.textes[index] !== undefined) return traiterMorceau(index + 1);
 
           suivi(estimation + '. Morceau ' + (index + 1) + ' sur ' + morceaux.length + '…', textePartielDecoupe());
-          var morceau = morceaux[index];
-          var wav = encoderWav(travailDecoupe.echantillons.subarray(morceau.debut, morceau.fin), FREQUENCE_DECOUPAGE);
           var contexte = textePartielDecoupe().slice(-LONGUEUR_CONTEXTE_CARACTERES);
 
-          return transcrireAvecWhisper(wav, 'morceau-' + (index + 1) + '.wav', contexte).then(function (texte) {
+          return travailDecoupe.fabriquerMorceau(index).then(function (morceau) {
+            return transcrireAvecWhisper(morceau.audio, morceau.nom, contexte);
+          }).then(function (texte) {
             travailDecoupe.textes[index] = texte;
             return traiterMorceau(index + 1);
           }, function (erreur) {
@@ -985,7 +1027,7 @@
               }).then(function () { return traiterMorceau(index); });
             }
             erreur.repriseePossible = true;
-            erreur.messageUtilisateur = (erreur.messageUtilisateur || erreur.message) +
+            erreur.messageUtilisateur = (erreur.messageUtilisateur || ('Lecture du fichier impossible (' + erreur.message + ').')) +
               ' Morceaux transcrits : ' + travailDecoupe.textes.filter(function (t) { return t !== undefined; }).length +
               ' sur ' + morceaux.length + '. Appuie sur « Reprendre » pour continuer.';
             throw erreur;
@@ -995,9 +1037,439 @@
       });
     }
 
+    // ---------- Vidéos et fichiers MP4 / MOV / M4A : extraction du son sans tout charger ----------
+    // Ces fichiers sont rangés en « boîtes » : une table des matières (moov) qui dit où se trouve
+    // chaque petit bout de son (quelques centièmes de seconde) dans le fichier, et les données (mdat).
+    // On lit la table, puis on va chercher seulement les bouts de son, par fenêtres de 16 Mo.
+    // L'image n'est jamais lue ni décodée. Chaque morceau est réemballé en .m4a pour Groq.
+    var EXTENSIONS_CONTENEUR_MP4 = ['mp4', 'm4a', 'm4v', 'mov', '3gp', '3g2'];
+    var EXTENSIONS_VIDEO = ['mp4', 'm4v', 'mov', '3gp', '3g2', 'webm'];
+    var TAILLE_MAX_TABLE_MP4 = 64 * 1024 * 1024;    // au-delà, la table des matières est jugée anormale
+    var TAILLE_FENETRE_LECTURE = 16 * 1024 * 1024;  // la vidéo est lue par fenêtres de 16 Mo
+    var TAILLE_MAX_MORCEAU_M4A = 20 * 1024 * 1024;  // marge sous la limite de 25 Mo de Groq
+    var LISSAGE_SILENCE_TRAMES = 5;                 // le silence est cherché sur ~0,1 s (5 trames de son)
+
+    function extensionFichier(fichier) {
+      var correspondance = /\.([^.\/]+)$/.exec(fichier.name || '');
+      return correspondance ? correspondance[1].toLowerCase() : '';
+    }
+
+    function estConteneurMp4(fichier) {
+      return EXTENSIONS_CONTENEUR_MP4.indexOf(extensionFichier(fichier)) !== -1 ||
+        /mp4|quicktime|3gpp|m4a/.test(fichier.type || '');
+    }
+
+    function estVideo(fichier) {
+      if (/^video\//.test(fichier.type || '')) return true;
+      if (/^audio\//.test(fichier.type || '')) return false;
+      return EXTENSIONS_VIDEO.indexOf(extensionFichier(fichier)) !== -1 && extensionFichier(fichier) !== 'webm';
+    }
+
+    // Erreur « cette méthode ne sait pas lire ce fichier » : on bascule alors sur la méthode classique.
+    function erreurFormatNonGere(message) {
+      var erreur = erreurTranscription(message);
+      erreur.formatNonGere = true;
+      return erreur;
+    }
+
+    function lireTranche(fichier, debut, fin) {
+      return fichier.slice(debut, fin).arrayBuffer().then(function (tampon) { return new Uint8Array(tampon); });
+    }
+
+    function texteBoite(octets, position) {
+      return String.fromCharCode(octets[position], octets[position + 1], octets[position + 2], octets[position + 3]);
+    }
+
+    function lireEntier32(octets, position) {
+      return ((octets[position] << 24) >>> 0) + (octets[position + 1] << 16) + (octets[position + 2] << 8) + octets[position + 3];
+    }
+
+    function lireEntier64(octets, position) {
+      return lireEntier32(octets, position) * 4294967296 + lireEntier32(octets, position + 4);
+    }
+
+    // Parcourt le fichier boîte par boîte (en ne lisant que leurs en-têtes) jusqu'à la table des matières.
+    function lireTableMp4(fichier) {
+      function examiner(position) {
+        if (position + 8 > fichier.size) return Promise.reject(erreurFormatNonGere('Table des matières introuvable.'));
+        return lireTranche(fichier, position, Math.min(fichier.size, position + 16)).then(function (entete) {
+          var taille = lireEntier32(entete, 0);
+          var type = texteBoite(entete, 4);
+          var tailleEntete = 8;
+          if (taille === 1) { taille = lireEntier64(entete, 8); tailleEntete = 16; }
+          else if (taille === 0) taille = fichier.size - position;
+          if (taille < tailleEntete) throw erreurFormatNonGere('Fichier MP4 abîmé.');
+          if (type === 'moov') {
+            if (taille > TAILLE_MAX_TABLE_MP4) throw erreurFormatNonGere('Table des matières trop grande.');
+            return lireTranche(fichier, position, position + taille);
+          }
+          return examiner(position + taille);
+        });
+      }
+      return examiner(0);
+    }
+
+    // Liste les boîtes contenues entre debut et fin.
+    function boitesEnfants(octets, debut, fin) {
+      var boites = [];
+      var position = debut;
+      while (position + 8 <= fin) {
+        var taille = lireEntier32(octets, position);
+        var tailleEntete = 8;
+        if (taille === 1) { taille = lireEntier64(octets, position + 8); tailleEntete = 16; }
+        else if (taille === 0) taille = fin - position;
+        if (taille < tailleEntete || position + taille > fin) break;
+        boites.push({ type: texteBoite(octets, position + 4), debutBoite: position, debut: position + tailleEntete, fin: position + taille });
+        position += taille;
+      }
+      return boites;
+    }
+
+    // Trouve une boîte par son chemin, par exemple 'minf/stbl/stsd'.
+    function boiteParChemin(octets, parent, chemin) {
+      var boite = parent;
+      chemin.split('/').forEach(function (type) {
+        if (!boite) return;
+        boite = boitesEnfants(octets, boite.debut, boite.fin).filter(function (b) { return b.type === type; })[0] || null;
+      });
+      return boite;
+    }
+
+    // Lit la configuration AAC (quelques octets) rangée dans la boîte esds.
+    function lireConfigurationAac(octets, esds) {
+      var position = esds.debut + 4; // version et options
+      function lireDescripteur() {
+        var etiquette = octets[position++];
+        var taille = 0;
+        for (var i = 0; i < 4; i++) {
+          var octet = octets[position++];
+          taille = (taille << 7) | (octet & 0x7f);
+          if (!(octet & 0x80)) break;
+        }
+        return { etiquette: etiquette, taille: taille, debut: position };
+      }
+      var descripteur = lireDescripteur();
+      if (descripteur.etiquette === 3) {
+        position += 2; // numéro du flux
+        var options = octets[position++];
+        if (options & 0x80) position += 2;
+        if (options & 0x40) position += 1 + octets[position];
+        if (options & 0x20) position += 2;
+        descripteur = lireDescripteur();
+      }
+      if (descripteur.etiquette !== 4) return null;
+      position += 13; // type d'objet, type de flux, tampon, débits
+      descripteur = lireDescripteur();
+      if (descripteur.etiquette !== 5) return null;
+      return octets.slice(descripteur.debut, descripteur.debut + descripteur.taille);
+    }
+
+    // Analyse la table des matières et renvoie tout ce qu'il faut savoir sur la piste son.
+    function analyserPisteAudioMp4(octets) {
+      var racine = { debut: 8, fin: octets.length };
+      var pistes = boitesEnfants(octets, racine.debut, racine.fin).filter(function (b) { return b.type === 'trak'; });
+      for (var p = 0; p < pistes.length; p++) {
+        var mdia = boiteParChemin(octets, pistes[p], 'mdia');
+        var hdlr = mdia && boiteParChemin(octets, mdia, 'hdlr');
+        if (!hdlr || texteBoite(octets, hdlr.debut + 8) !== 'soun') continue;
+
+        var mdhd = boiteParChemin(octets, mdia, 'mdhd');
+        var echelle = octets[mdhd.debut] === 1 ? lireEntier32(octets, mdhd.debut + 20) : lireEntier32(octets, mdhd.debut + 12);
+        var stbl = boiteParChemin(octets, mdia, 'minf/stbl');
+        var stsd = stbl && boiteParChemin(octets, stbl, 'stsd');
+        if (!stsd) continue;
+
+        // Description du son (première entrée de stsd).
+        var entree = boitesEnfants(octets, stsd.debut + 8, stsd.fin)[0];
+        if (!entree) continue;
+        if (entree.type !== 'mp4a') throw erreurFormatNonGere('Son au format « ' + entree.type.trim() + ' », non lu par cette méthode.');
+        var versionEntree = (octets[entree.debut + 8] << 8) | octets[entree.debut + 9];
+        var canaux = (octets[entree.debut + 16] << 8) | octets[entree.debut + 17];
+        var frequence = lireEntier32(octets, entree.debut + 24) / 65536;
+        var debutEnfants = entree.debut + 28 + (versionEntree === 1 ? 16 : versionEntree === 2 ? 36 : 0);
+        var esds = boitesEnfants(octets, debutEnfants, entree.fin).filter(function (b) { return b.type === 'esds'; })[0];
+        if (!esds) {
+          var wave = boitesEnfants(octets, debutEnfants, entree.fin).filter(function (b) { return b.type === 'wave'; })[0];
+          if (wave) esds = boitesEnfants(octets, wave.debut, wave.fin).filter(function (b) { return b.type === 'esds'; })[0];
+        }
+        var configuration = esds ? lireConfigurationAac(octets, esds) : null;
+        if (versionEntree === 2) { canaux = lireEntier32(octets, entree.debut + 40); frequence = new DataView(octets.buffer, octets.byteOffset + entree.debut + 32, 8).getFloat64(0); }
+
+        // Tables : tailles, durées, groupes (chunks) et positions dans le fichier.
+        var stsz = boiteParChemin(octets, stbl, 'stsz');
+        var stts = boiteParChemin(octets, stbl, 'stts');
+        var stsc = boiteParChemin(octets, stbl, 'stsc');
+        var stco = boiteParChemin(octets, stbl, 'stco');
+        var co64 = boiteParChemin(octets, stbl, 'co64');
+        if (!stsz || !stts || !stsc || (!stco && !co64)) throw erreurFormatNonGere('Table du son incomplète.');
+
+        var tailleCommune = lireEntier32(octets, stsz.debut + 4);
+        var nombre = lireEntier32(octets, stsz.debut + 8);
+        if (!nombre) throw erreurFormatNonGere('Vidéo au format fragmenté, non lue par cette méthode.');
+        var tailles = new Uint32Array(nombre);
+        for (var i = 0; i < nombre; i++) tailles[i] = tailleCommune || lireEntier32(octets, stsz.debut + 12 + i * 4);
+
+        var durees = new Uint32Array(nombre);
+        var indice = 0;
+        var nombreDurees = lireEntier32(octets, stts.debut + 4);
+        for (var d = 0; d < nombreDurees && indice < nombre; d++) {
+          var repetitions = lireEntier32(octets, stts.debut + 8 + d * 8);
+          var duree = lireEntier32(octets, stts.debut + 12 + d * 8);
+          for (var r = 0; r < repetitions && indice < nombre; r++) durees[indice++] = duree;
+        }
+
+        var tableGroupes = co64 || stco;
+        var nombreGroupes = lireEntier32(octets, tableGroupes.debut + 4);
+        var nombreRegles = lireEntier32(octets, stsc.debut + 4);
+        var positions = new Float64Array(nombre);
+        indice = 0;
+        for (var g = 0, regle = 0; g < nombreGroupes && indice < nombre; g++) {
+          while (regle + 1 < nombreRegles && lireEntier32(octets, stsc.debut + 8 + (regle + 1) * 12) <= g + 1) regle++;
+          var parGroupe = lireEntier32(octets, stsc.debut + 12 + regle * 12);
+          var position = co64 ? lireEntier64(octets, co64.debut + 8 + g * 8) : lireEntier32(octets, stco.debut + 8 + g * 4);
+          for (var s = 0; s < parGroupe && indice < nombre; s++) {
+            positions[indice] = position;
+            position += tailles[indice];
+            indice++;
+          }
+        }
+        if (indice < nombre) throw erreurFormatNonGere('Table du son incohérente.');
+
+        var dureeTotale = 0;
+        for (var k = 0; k < nombre; k++) dureeTotale += durees[k];
+
+        return {
+          echelle: echelle,
+          canaux: canaux,
+          frequence: frequence,
+          configuration: configuration,
+          stsdBrut: octets.slice(stsd.debutBoite, stsd.fin), // recopiée telle quelle dans chaque .m4a
+          tailles: tailles,
+          durees: durees,
+          positions: positions,
+          dureeSecondes: dureeTotale / echelle
+        };
+      }
+      throw erreurTranscription('Ce fichier ne contient pas de son.');
+    }
+
+    // Copie les octets du son des trames [debut, fin[ dans un seul tableau, en lisant le fichier
+    // par fenêtres de 16 Mo (seul le son est gardé, l'image lue au passage est aussitôt libérée).
+    function lireTramesMp4(fichier, piste, debut, fin) {
+      var total = 0;
+      for (var i = debut; i < fin; i++) total += piste.tailles[i];
+      var donnees = new Uint8Array(total);
+      var ecrit = 0;
+      function lireDepuis(indice) {
+        if (indice >= fin) return Promise.resolve(donnees);
+        var debutFenetre = piste.positions[indice];
+        var finFenetre = debutFenetre + piste.tailles[indice];
+        var suivant = indice + 1;
+        while (suivant < fin && piste.positions[suivant] >= debutFenetre &&
+               piste.positions[suivant] + piste.tailles[suivant] - debutFenetre <= TAILLE_FENETRE_LECTURE) {
+          finFenetre = Math.max(finFenetre, piste.positions[suivant] + piste.tailles[suivant]);
+          suivant++;
+        }
+        return lireTranche(fichier, debutFenetre, finFenetre).then(function (fenetre) {
+          for (var k = indice; k < suivant; k++) {
+            var depart = piste.positions[k] - debutFenetre;
+            donnees.set(fenetre.subarray(depart, depart + piste.tailles[k]), ecrit);
+            ecrit += piste.tailles[k];
+          }
+          return lireDepuis(suivant);
+        });
+      }
+      return lireDepuis(debut);
+    }
+
+    // Volume de chaque trame entre debut et fin, en décodant ces quelques secondes (WebCodecs).
+    // Si le téléphone ne sait pas décoder, on prend la taille des trames : le silence pèse moins lourd.
+    function mesurerVolumesMp4(fichier, piste, debut, fin) {
+      var parTaille = function () { return Array.prototype.slice.call(piste.tailles.subarray(debut, fin)); };
+      if (!window.AudioDecoder || !window.EncodedAudioChunk || !piste.configuration) return Promise.resolve(parTaille());
+      var typeObjet = piste.configuration[0] >> 3;
+      var configuration = {
+        codec: 'mp4a.40.' + (typeObjet && typeObjet < 31 ? typeObjet : 2),
+        sampleRate: piste.frequence,
+        numberOfChannels: piste.canaux,
+        description: piste.configuration
+      };
+      return AudioDecoder.isConfigSupported(configuration).then(function (reponse) {
+        if (!reponse.supported) throw new Error('décodage impossible');
+        return lireTramesMp4(fichier, piste, debut, fin);
+      }).then(function (donnees) {
+        return new Promise(function (resoudre, rejeter) {
+          var volumes = [];
+          for (var v = 0; v < fin - debut; v++) volumes.push(-1);
+          var decodeur = new AudioDecoder({
+            output: function (son) {
+              try {
+                var rang = Math.round(son.timestamp / 1000) - debut;
+                var tampon = new Float32Array(son.numberOfFrames);
+                son.copyTo(tampon, { planeIndex: 0, format: 'f32-planar' });
+                var somme = 0;
+                for (var i = 0; i < tampon.length; i++) somme += tampon[i] * tampon[i];
+                if (rang >= 0 && rang < volumes.length) volumes[rang] = somme / Math.max(1, tampon.length);
+              } catch (erreur) {}
+              son.close();
+            },
+            error: rejeter
+          });
+          decodeur.configure(configuration);
+          var position = 0;
+          for (var t = debut; t < fin; t++) {
+            decodeur.decode(new EncodedAudioChunk({ type: 'key', timestamp: t * 1000, data: donnees.subarray(position, position + piste.tailles[t]) }));
+            position += piste.tailles[t];
+          }
+          decodeur.flush().then(function () {
+            decodeur.close();
+            var mesurees = volumes.filter(function (v) { return v >= 0; }).length;
+            resoudre(mesurees >= volumes.length / 2 ? volumes : parTaille());
+          }, rejeter);
+        });
+      }).catch(parTaille);
+    }
+
+    // Choisit où couper : le moment le plus calme dans les 30 secondes avant la limite.
+    function trouverCoupeMp4(fichier, piste, debutFenetre, fin) {
+      return mesurerVolumesMp4(fichier, piste, debutFenetre, fin).then(function (volumes) {
+        var meilleure = fin;
+        var minimum = Infinity;
+        for (var i = 0; i + LISSAGE_SILENCE_TRAMES <= volumes.length; i++) {
+          var somme = 0;
+          var valide = true;
+          for (var j = i; j < i + LISSAGE_SILENCE_TRAMES; j++) {
+            if (volumes[j] < 0) { valide = false; break; }
+            somme += volumes[j];
+          }
+          if (valide && somme < minimum) {
+            minimum = somme;
+            meilleure = debutFenetre + i + Math.floor(LISSAGE_SILENCE_TRAMES / 2);
+          }
+        }
+        return meilleure;
+      });
+    }
+
+    // Calcule les morceaux (en numéros de trames) : 10 min et 20 Mo au plus, coupés dans un silence.
+    function calculerMorceauxMp4(fichier, piste, suivi) {
+      var morceaux = [];
+      var nombre = piste.tailles.length;
+      var limiteDuree = DUREE_MORCEAU_SECONDES * piste.echelle;
+      var dureeFenetre = FENETRE_RECHERCHE_SILENCE_SECONDES * piste.echelle;
+      function suivant(debut) {
+        if (debut >= nombre) return Promise.resolve(morceaux);
+        var fin = debut, duree = 0, octets = 0;
+        while (fin < nombre && duree + piste.durees[fin] <= limiteDuree && octets + piste.tailles[fin] <= TAILLE_MAX_MORCEAU_M4A) {
+          duree += piste.durees[fin];
+          octets += piste.tailles[fin];
+          fin++;
+        }
+        if (fin >= nombre) { morceaux.push({ debut: debut, fin: nombre }); return Promise.resolve(morceaux); }
+        var debutFenetre = fin, dureeRecherche = 0;
+        while (debutFenetre > debut + 1 && dureeRecherche < dureeFenetre) { debutFenetre--; dureeRecherche += piste.durees[debutFenetre]; }
+        suivi('Préparation : recherche d\'un silence pour la coupe ' + (morceaux.length + 1) + '…', '');
+        return trouverCoupeMp4(fichier, piste, debutFenetre, fin).then(function (coupe) {
+          if (coupe <= debut || coupe > fin) coupe = fin;
+          morceaux.push({ debut: debut, fin: coupe });
+          return suivant(coupe);
+        });
+      }
+      return suivant(0);
+    }
+
+    // ---- Fabrication d'un petit fichier .m4a (son seul) ----
+    function octetsEntier32(n) { return new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]); }
+    function octetsEntier16(n) { return new Uint8Array([(n >>> 8) & 255, n & 255]); }
+    function octetsTexte(texte) { var o = new Uint8Array(texte.length); for (var i = 0; i < texte.length; i++) o[i] = texte.charCodeAt(i); return o; }
+    function octetsZeros(n) { return new Uint8Array(n); }
+    function assembler(parties) {
+      var total = 0;
+      parties.forEach(function (p) { total += p.length; });
+      var resultat = new Uint8Array(total), position = 0;
+      parties.forEach(function (p) { resultat.set(p, position); position += p.length; });
+      return resultat;
+    }
+    function fabriquerBoite(type, parties) {
+      var contenu = assembler(parties);
+      return assembler([octetsEntier32(contenu.length + 8), octetsTexte(type), contenu]);
+    }
+    function entiers32(liste) { return assembler(liste.map(octetsEntier32)); }
+
+    function creerM4a(piste, debut, fin, donnees) {
+      var nombre = fin - debut;
+      var duree = 0;
+      for (var i = debut; i < fin; i++) duree += piste.durees[i];
+      var matrice = entiers32([0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]);
+
+      // Durées : les trames de même durée sont regroupées.
+      var groupesDurees = [];
+      for (var t = debut; t < fin; t++) {
+        var dernier = groupesDurees[groupesDurees.length - 1];
+        if (dernier && dernier[1] === piste.durees[t]) dernier[0]++;
+        else groupesDurees.push([1, piste.durees[t]]);
+      }
+      var tailles = new Uint8Array(nombre * 4);
+      for (var s = 0; s < nombre; s++) tailles.set(octetsEntier32(piste.tailles[debut + s]), s * 4);
+
+      function table(positionDonnees) {
+        var stbl = fabriquerBoite('stbl', [
+          piste.stsdBrut,
+          fabriquerBoite('stts', [octetsEntier32(0), octetsEntier32(groupesDurees.length)].concat(groupesDurees.map(entiers32))),
+          fabriquerBoite('stsc', [entiers32([0, 1, 1, nombre, 1])]),
+          fabriquerBoite('stsz', [entiers32([0, 0, nombre]), tailles]),
+          fabriquerBoite('stco', [entiers32([0, 1, positionDonnees])])
+        ]);
+        var minf = fabriquerBoite('minf', [
+          fabriquerBoite('smhd', [octetsZeros(8)]),
+          fabriquerBoite('dinf', [fabriquerBoite('dref', [entiers32([0, 1]), fabriquerBoite('url ', [entiers32([1])])])]),
+          stbl
+        ]);
+        var mdia = fabriquerBoite('mdia', [
+          fabriquerBoite('mdhd', [entiers32([0, 0, 0, piste.echelle, duree]), octetsEntier16(0x55c4), octetsEntier16(0)]),
+          fabriquerBoite('hdlr', [entiers32([0, 0]), octetsTexte('soun'), octetsZeros(12), octetsTexte('SoundHandler'), octetsZeros(1)]),
+          minf
+        ]);
+        var tkhd = fabriquerBoite('tkhd', [entiers32([3, 0, 0, 1, 0, duree, 0, 0]), octetsEntier16(0), octetsEntier16(0),
+          octetsEntier16(0x0100), octetsEntier16(0), matrice, entiers32([0, 0])]);
+        var mvhd = fabriquerBoite('mvhd', [entiers32([0, 0, 0, piste.echelle, duree, 0x00010000]), octetsEntier16(0x0100),
+          octetsZeros(10), matrice, octetsZeros(24), entiers32([2])]);
+        return fabriquerBoite('moov', [mvhd, fabriquerBoite('trak', [tkhd, mdia])]);
+      }
+
+      var ftyp = fabriquerBoite('ftyp', [octetsTexte('M4A '), octetsEntier32(0), octetsTexte('M4A mp42isom')]);
+      var longueurMoov = table(0).length;
+      var moov = table(ftyp.length + longueurMoov + 8);
+      var enteteDonnees = assembler([octetsEntier32(donnees.length + 8), octetsTexte('mdat')]);
+      return new Blob([ftyp, moov, enteteDonnees, donnees], { type: 'audio/mp4' });
+    }
+
+    // Prépare le découpage d'un MP4 / MOV / M4A sans le charger en entier.
+    function preparerDecoupeMp4(fichier, suivi) {
+      suivi('Préparation : lecture de la table des matières…', '');
+      return lireTableMp4(fichier).then(function (table) {
+        var piste = analyserPisteAudioMp4(table);
+        return calculerMorceauxMp4(fichier, piste, suivi).then(function (morceaux) {
+          return {
+            fichier: fichier,
+            morceaux: morceaux,
+            dureeTotale: piste.dureeSecondes,
+            textes: [],
+            fabriquerMorceau: function (index) {
+              var morceau = morceaux[index];
+              return lireTramesMp4(fichier, piste, morceau.debut, morceau.fin).then(function (donnees) {
+                return { audio: creerM4a(piste, morceau.debut, morceau.fin, donnees), nom: 'morceau-' + (index + 1) + '.m4a' };
+              });
+            }
+          };
+        });
+      });
+    }
+
     // ---------- Importer un fichier audio ----------
     // Formats acceptés par Groq. « opus » (messages vocaux WhatsApp) est envoyé sous le nom « .ogg ».
-    var EXTENSIONS_ACCEPTEES = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'wav', 'webm'];
+    // Les vidéos mov, m4v et 3gp sont envoyées sous le nom « .mp4 » (même structure de fichier).
+    var EXTENSIONS_ACCEPTEES = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'wav', 'webm', 'mov', 'm4v', '3gp', '3g2'];
     var fichierImporte = null;      // le fichier choisi (File)
     var infosImport = null;         // date, durée et nom du fichier (pour l'en-tête du .txt)
     var nomFichierImportePourGroq = '';
@@ -1029,6 +1501,7 @@
       if (!extension && /^(audio|video)\//.test(fichier.type)) extension = extensionPourFormat(fichier.type);
       if (EXTENSIONS_ACCEPTEES.indexOf(extension) === -1) return '';
       if (extension === 'opus') extension = 'ogg';
+      if (['mov', 'm4v', '3gp', '3g2'].indexOf(extension) !== -1) extension = 'mp4';
       return base + '.' + extension;
     }
 
@@ -1061,7 +1534,9 @@
       zoneFichierImport.hidden = false;
       boutonTranscrireImport.disabled = false;
 
-      if (fichier.size > TAILLE_MAX_FICHIER_GROQ) {
+      if (estVideo(fichier)) {
+        afficherMessageDans(messageImport, 'Vidéo : seul le son sera extrait et envoyé à Groq, découpé en morceaux si besoin.', '');
+      } else if (fichier.size > TAILLE_MAX_FICHIER_GROQ) {
         afficherMessageDans(messageImport, 'Ce fichier fait plus de 25 Mo : il sera découpé en morceaux automatiquement.', '');
       }
     });
@@ -1105,6 +1580,7 @@
         }
         afficherMessageDans(messageTranscriptionImport, '', '');
         texteTranscriptionImport.textContent = texte;
+        if (infosImport.dureeSecondes === null && derniereDureeDecoupe) infosImport.dureeSecondes = derniereDureeDecoupe;
         enregistrerImportDansHistorique(texte);
       }).catch(function (erreur) {
         transcriptionImportEnCours = false;
@@ -1131,7 +1607,7 @@
         dureeSecondes: infosImport.dureeSecondes,
         texte: texte,
         statut: 'transcrit'
-      }, lireConserverAudioImports() ? fichier : null).catch(function () {
+      }, lireConserverAudioImports() && !estVideo(fichier) ? fichier : null).catch(function () { // jamais les vidéos : trop lourdes
         afficherMessageDans(messageTranscriptionImport, 'Impossible de garder cette transcription dans l\'historique (espace plein ?).', 'erreur');
         return null;
       });
