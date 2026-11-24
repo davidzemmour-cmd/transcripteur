@@ -4,6 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Transcripteur</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#141414">
+  <link rel="icon" href="icones/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icones/icone-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icones/icone-180.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Transcripteur">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <style>
     :root {
       --couleur-fond: #f6f6f6;
@@ -37,11 +46,12 @@
       gap: 12px;
     }
     .logo {
-      width: 28px;
-      height: 28px;
-      background: var(--couleur-accent);
+      width: 32px;
+      height: 32px;
       flex-shrink: 0;
+      display: block;
     }
+    .aide-installation { margin-top: 8px !important; line-height: 1.5; }
     header h1 { margin: 0; font-size: 20px; }
 
     /* Zone des écrans */
@@ -218,7 +228,7 @@
 </head>
 <body>
   <header>
-    <div class="logo"></div>
+    <img class="logo" src="icones/favicon.svg" alt="">
     <h1>Transcripteur</h1>
   </header>
 
@@ -358,6 +368,11 @@
         <button type="button" id="bouton-tout-effacer-historique" class="bouton-danger">Effacer tout l'historique</button>
       </div>
       <p id="message-reglages-historique" class="message" role="status"></p>
+
+      <label class="etiquette">Installation sur le téléphone</label>
+      <p id="etat-installation"></p>
+      <button type="button" id="bouton-installer" class="bouton-principal bouton-pleine-largeur" hidden>Installer l'appli</button>
+      <p id="aide-installation" class="aide-installation" hidden></p>
     </section>
   </main>
 
@@ -1931,6 +1946,73 @@
         demarrerEnregistrement();
       }
     });
+
+    // ---------- Installation sur le téléphone (PWA) ----------
+    var invitationInstallation = null; // proposée par Chrome/Edge sur Android quand l'appli est installable
+    var etatInstallation = document.getElementById('etat-installation');
+    var boutonInstaller = document.getElementById('bouton-installer');
+    var aideInstallation = document.getElementById('aide-installation');
+
+    function estInstallee() {
+      return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    }
+
+    function estIphone() {
+      return /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    function mettreAJourZoneInstallation() {
+      boutonInstaller.hidden = true;
+      aideInstallation.hidden = true;
+      if (estInstallee()) {
+        etatInstallation.textContent = 'L\'appli est installée sur ce téléphone.';
+        return;
+      }
+      etatInstallation.textContent = 'Installe l\'appli pour l\'ouvrir depuis l\'écran d\'accueil, en plein écran, même sans réseau.';
+      if (invitationInstallation) {
+        boutonInstaller.hidden = false;
+      } else if (estIphone()) {
+        aideInstallation.textContent = 'Sur iPhone : ouvre cette page dans Safari, touche le bouton Partager (le carré avec une flèche vers le haut), puis « Sur l\'écran d\'accueil ». ' +
+          'Attention : l\'appli installée a son propre stockage. Il faudra y ressaisir ta clé Groq, et l\'historique de Safari n\'y apparaîtra pas.';
+        aideInstallation.hidden = false;
+      } else {
+        aideInstallation.textContent = 'Si le bouton n\'apparaît pas : ouvre le menu ⋮ du navigateur, puis « Installer l\'application » ou « Ajouter à l\'écran d\'accueil ».';
+        aideInstallation.hidden = false;
+      }
+    }
+
+    window.addEventListener('beforeinstallprompt', function (evenement) {
+      evenement.preventDefault(); // on garde l'invitation pour notre propre bouton
+      invitationInstallation = evenement;
+      mettreAJourZoneInstallation();
+    });
+
+    boutonInstaller.addEventListener('click', function () {
+      if (!invitationInstallation) return;
+      var invitation = invitationInstallation;
+      invitationInstallation = null;
+      invitation.prompt();
+      invitation.userChoice.then(function (choix) {
+        if (choix.outcome !== 'accepted') invitationInstallation = null;
+        mettreAJourZoneInstallation();
+      }).catch(mettreAJourZoneInstallation);
+    });
+
+    window.addEventListener('appinstalled', function () {
+      invitationInstallation = null;
+      boutonInstaller.hidden = true;
+      aideInstallation.hidden = true;
+      etatInstallation.textContent = 'Appli installée. Tu la trouveras sur l\'écran d\'accueil.';
+    });
+
+    mettreAJourZoneInstallation();
+
+    // Copie de l'appli sur le téléphone, pour qu'elle s'ouvre sans réseau.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('service-worker.js').catch(function () {});
+      });
+    }
   </script>
 </body>
 </html>
