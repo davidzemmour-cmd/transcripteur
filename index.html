@@ -108,6 +108,10 @@
     }
     .texte-transcription:not(:empty) { margin-top: 8px; }
     .zone-transcription .bouton-secondaire { width: 100%; margin-top: 12px; }
+    /* Barre Copier / Partager / Télécharger : visible seulement s'il y a du texte */
+    .actions-transcription { display: flex; gap: 8px; margin-top: 12px; }
+    .actions-transcription .bouton-secondaire { flex: 1; min-width: 0; margin-top: 0; padding: 10px 4px; font-size: 14px; }
+    .texte-transcription:empty + .actions-transcription { display: none; }
     .bouton-fichier { display: block; text-align: center; margin-top: 24px; }
     .bouton-pleine-largeur { width: 100%; margin-top: 12px; }
 
@@ -207,6 +211,11 @@
         <div class="titre-zone">Transcription</div>
         <p id="message-transcription" class="message" role="status"></p>
         <div id="texte-transcription" class="texte-transcription"></div>
+        <div id="actions-transcription" class="actions-transcription">
+          <button type="button" class="bouton-secondaire" data-action="copier">Copier</button>
+          <button type="button" class="bouton-secondaire" data-action="partager">Partager</button>
+          <button type="button" class="bouton-secondaire" data-action="telecharger">Télécharger .txt</button>
+        </div>
         <button type="button" id="bouton-relancer-transcription" class="bouton-secondaire" hidden>Relancer la transcription</button>
       </div>
     </section>
@@ -230,6 +239,11 @@
         <div class="titre-zone">Transcription</div>
         <p id="message-transcription-import" class="message" role="status"></p>
         <div id="texte-transcription-import" class="texte-transcription"></div>
+        <div id="actions-transcription-import" class="actions-transcription">
+          <button type="button" class="bouton-secondaire" data-action="copier">Copier</button>
+          <button type="button" class="bouton-secondaire" data-action="partager">Partager</button>
+          <button type="button" class="bouton-secondaire" data-action="telecharger">Télécharger .txt</button>
+        </div>
         <button type="button" id="bouton-relancer-transcription-import" class="bouton-secondaire" hidden>Relancer la transcription</button>
       </div>
     </section>
@@ -374,6 +388,7 @@
     var audioEnregistre = null;     // le dernier enregistrement terminé (Blob)
     var fluxMicro = null;           // le flux du micro, à couper à l'arrêt
     var debutEnregistrement = 0;
+    var infosEnregistrement = null; // date et durée du dernier enregistrement (pour l'en-tête du .txt)
     var minuteurChrono = null;
     var enPreparation = false;      // vrai entre l'appui sur Démarrer et le vrai début
     var enFinalisation = false;     // vrai entre l'appui sur Arrêter et le vrai arrêt
@@ -486,6 +501,7 @@
       clearInterval(minuteurChrono);
       arreterTranscriptionDirecte();
       var dureeSecondes = (Date.now() - debutEnregistrement) / 1000;
+      infosEnregistrement = { date: new Date(), dureeSecondes: dureeSecondes, nomFichierAudio: '' };
       if (fluxMicro) {
         fluxMicro.getTracks().forEach(function (piste) { piste.stop(); });
         fluxMicro = null;
@@ -860,6 +876,7 @@
     // Formats acceptés par Groq. « opus » (messages vocaux WhatsApp) est envoyé sous le nom « .ogg ».
     var EXTENSIONS_ACCEPTEES = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'wav', 'webm'];
     var fichierImporte = null;      // le fichier choisi (File)
+    var infosImport = null;         // date, durée et nom du fichier (pour l'en-tête du .txt)
     var nomFichierImportePourGroq = '';
     var transcriptionImportEnCours = false;
 
@@ -940,6 +957,11 @@
     function transcrireFichierImporte() {
       if (!fichierImporte || transcriptionImportEnCours) return;
       transcriptionImportEnCours = true;
+      infosImport = {
+        date: new Date(),
+        dureeSecondes: isFinite(lecteurImport.duration) ? lecteurImport.duration : null,
+        nomFichierAudio: fichierImporte.name
+      };
       boutonTranscrireImport.disabled = true;
       zoneTranscriptionImport.hidden = false;
       texteTranscriptionImport.textContent = '';
@@ -969,6 +991,131 @@
     }
 
     boutonTranscrireImport.addEventListener('click', transcrireFichierImporte);
+    // ---------- Copier, partager, télécharger ----------
+    var SEUIL_PARTAGE_FICHIER_CARACTERES = 4000; // au-delà, on partage un fichier .txt plutôt que le texte
+
+    function deuxChiffres(nombre) { return String(nombre).padStart(2, '0'); }
+
+    // Durée lisible : « 12:34 » ou « 1:27:05 ».
+    function formaterDureeComplete(secondes) {
+      if (secondes === null || secondes === undefined || !isFinite(secondes)) return 'inconnue';
+      secondes = Math.round(secondes);
+      var heures = Math.floor(secondes / 3600);
+      var minutes = Math.floor((secondes % 3600) / 60);
+      var reste = secondes % 60;
+      return (heures ? heures + ':' + deuxChiffres(minutes) : minutes) + ':' + deuxChiffres(reste);
+    }
+
+    // Nom du fichier .txt : date et heure pour un enregistrement, nom du fichier audio pour un import.
+    function nomFichierTranscription(source) {
+      if (source && source.nomFichierAudio) {
+        var base = source.nomFichierAudio.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '-').trim() || 'audio';
+        return 'transcription-' + base + '.txt';
+      }
+      var d = (source && source.date) || new Date();
+      return 'transcription-' + d.getFullYear() + '-' + deuxChiffres(d.getMonth() + 1) + '-' + deuxChiffres(d.getDate()) +
+        '-' + deuxChiffres(d.getHours()) + 'h' + deuxChiffres(d.getMinutes()) + '.txt';
+    }
+
+    // Ligne d'informations placée en tête des fichiers .txt.
+    function enTeteTranscription(source) {
+      var d = (source && source.date) || new Date();
+      var ligne = 'Transcription du ' + deuxChiffres(d.getDate()) + '/' + deuxChiffres(d.getMonth() + 1) + '/' + d.getFullYear() +
+        ' à ' + deuxChiffres(d.getHours()) + ':' + deuxChiffres(d.getMinutes()) +
+        ' · Durée : ' + formaterDureeComplete(source ? source.dureeSecondes : null);
+      if (source && source.nomFichierAudio) ligne += ' · Fichier : ' + source.nomFichierAudio;
+      return ligne;
+    }
+
+    function contenuFichierTxt(texte, source) {
+      return enTeteTranscription(source) + '\r\n\r\n' + texte + '\r\n';
+    }
+
+    // Affiche brièvement une confirmation sur le bouton.
+    function confirmerSurBouton(bouton, texteConfirmation) {
+      var texteOrigine = bouton.dataset.texteOrigine || bouton.textContent;
+      bouton.dataset.texteOrigine = texteOrigine;
+      bouton.textContent = texteConfirmation;
+      clearTimeout(bouton.minuteurConfirmation);
+      bouton.minuteurConfirmation = setTimeout(function () { bouton.textContent = texteOrigine; }, 2000);
+    }
+
+    // Méthode de secours pour copier quand le presse-papiers moderne est refusé.
+    function copierAvecSecours(texte) {
+      var zone = document.createElement('textarea');
+      zone.value = texte;
+      zone.setAttribute('readonly', '');
+      zone.style.position = 'fixed';
+      zone.style.opacity = '0';
+      document.body.appendChild(zone);
+      zone.select();
+      zone.setSelectionRange(0, texte.length);
+      var reussi = false;
+      try { reussi = document.execCommand('copy'); } catch (erreur) {}
+      document.body.removeChild(zone);
+      return reussi;
+    }
+
+    function copierTexte(texte, bouton) {
+      var reussir = function () { confirmerSurBouton(bouton, 'Copié ✓'); };
+      var echouer = function () { confirmerSurBouton(bouton, 'Échec'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texte).then(reussir, function () {
+          copierAvecSecours(texte) ? reussir() : echouer();
+        });
+      } else {
+        copierAvecSecours(texte) ? reussir() : echouer();
+      }
+    }
+
+    // Texte court : partagé tel quel. Texte long : partagé en fichier .txt (si le téléphone le permet).
+    function partagerTexte(texte, nomFichier, source) {
+      if (!navigator.share) return Promise.resolve();
+      var donnees = { title: 'Transcription', text: texte };
+      if (texte.length > SEUIL_PARTAGE_FICHIER_CARACTERES && window.File) {
+        try {
+          var fichier = new File([contenuFichierTxt(texte, source)], nomFichier, { type: 'text/plain' });
+          if (navigator.canShare && navigator.canShare({ files: [fichier] })) {
+            donnees = { title: 'Transcription', files: [fichier] };
+          }
+        } catch (erreur) {}
+      }
+      return navigator.share(donnees).catch(function () {}); // annulation par l'utilisateur : rien à faire
+    }
+
+    function telechargerTexte(texte, nomFichier, source) {
+      // Le caractère ﻿ au début aide les vieux logiciels Windows à reconnaître l'UTF-8 (accents).
+      var blob = new Blob(['﻿' + contenuFichierTxt(texte, source)], { type: 'text/plain;charset=utf-8' });
+      var lien = document.createElement('a');
+      lien.href = URL.createObjectURL(blob);
+      lien.download = nomFichier;
+      document.body.appendChild(lien);
+      lien.click();
+      document.body.removeChild(lien);
+      setTimeout(function () { URL.revokeObjectURL(lien.href); }, 10000);
+    }
+
+    // Relie une barre de boutons à la zone de texte et aux informations de sa transcription.
+    function brancherActionsTranscription(idBarre, elementTexte, lireSource) {
+      var barre = document.getElementById(idBarre);
+      var boutonPartager = barre.querySelector('[data-action="partager"]');
+      if (!navigator.share) boutonPartager.hidden = true;
+      barre.addEventListener('click', function (evenement) {
+        var bouton = evenement.target.closest('button');
+        if (!bouton) return;
+        var texte = elementTexte.textContent.trim();
+        if (!texte) return;
+        var source = lireSource();
+        var nomFichier = nomFichierTranscription(source);
+        if (bouton.dataset.action === 'copier') copierTexte(texte, bouton);
+        if (bouton.dataset.action === 'partager') partagerTexte(texte, nomFichier, source);
+        if (bouton.dataset.action === 'telecharger') telechargerTexte(texte, nomFichier, source);
+      });
+    }
+
+    brancherActionsTranscription('actions-transcription', texteTranscription, function () { return infosEnregistrement; });
+    brancherActionsTranscription('actions-transcription-import', texteTranscriptionImport, function () { return infosImport; });
+
     boutonRelancerTranscriptionImport.addEventListener('click', transcrireFichierImporte);
 
     // ---------- Transcription en direct (Web Speech API) ----------
